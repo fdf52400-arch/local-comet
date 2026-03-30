@@ -5,7 +5,7 @@ import { checkProvider, listModels, chat, requestPlanFromModel } from "./provide
 import {
   closeBrowser, generateFallbackPlan, resolveConfirm, getPendingConfirm,
   executeManualAction, getPreviewState, takeScreenshot, setSelectedElement, getSelectedElement,
-  initBrowser, getSessionState, isBrowserBusy,
+  initBrowser, getSessionState, isBrowserBusy, probeChromiumAvailable,
   type AgentAction, type AgentRunConfig, type DOMElement,
 } from "./agent-engine";
 import { enqueueTask, cancelTask, getQueueStatus } from "./task-queue";
@@ -95,6 +95,9 @@ export async function registerRoutes(
         }
       }
 
+      // Probe Chromium binary availability (cached after first call)
+      const chromiumAvailable = await probeChromiumAvailable();
+
       res.json({
         browserBusy: isBrowserBusy(),
         queue: {
@@ -111,12 +114,14 @@ export async function registerRoutes(
         capabilities: {
           terminalExec: true,
           codeSandbox: true,
-          browserAgent: true,
+          browserAgent: chromiumAvailable,
+          /** chromiumAvailable: Playwright Chromium binary found on disk */
+          chromiumAvailable,
           /**
-           * Real browser execution is available when the browser is not busy.
+           * browserAvailable: Chromium is installed AND not currently busy.
            * When busy, agent tasks are queued and will execute sequentially.
            */
-          browserAvailable: !isBrowserBusy(),
+          browserAvailable: chromiumAvailable && !isBrowserBusy(),
         },
       });
     } catch (err: any) {
@@ -464,6 +469,16 @@ export async function registerRoutes(
       const { url, goal, maxSteps, sessionId, workspaceId } = req.body;
       if (!url || !goal) {
         return res.status(400).json({ error: "Требуются url и goal" });
+      }
+
+      // Fast-fail: reject browser tasks when Chromium binary is missing
+      const chromiumReady = await probeChromiumAvailable();
+      if (!chromiumReady) {
+        return res.status(503).json({
+          ok: false,
+          error: "browser_unavailable",
+          message: "Браузер (Chromium) недоступен — запустите `npx playwright install chromium` для установки браузера.",
+        });
       }
 
       const settings = await storage.getSettings();
@@ -895,6 +910,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Требуется query" });
       }
 
+      // Fast-fail: reject browser tasks when Chromium binary is missing
+      const chromiumReady = await probeChromiumAvailable();
+      if (!chromiumReady) {
+        return res.status(503).json({
+          ok: false,
+          error: "browser_unavailable",
+          message: "Браузер (Chromium) недоступен — запустите `npx playwright install chromium` для установки браузера.",
+        });
+      }
+
       const settings = await storage.getSettings();
       const safetyMode = settings?.safetyMode || "readonly";
       const sid = sessionId || `session-${Date.now()}`;
@@ -1128,8 +1153,20 @@ export async function registerRoutes(
   app.post("/api/kwork/leads/:id/computer-review", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "id должен быть числом" });
       const lead = await storage.getKworkLead(id);
       if (!lead) return res.status(404).json({ error: "Лид не найден" });
+
+      // Fast-fail: if Chromium binary is missing, reject immediately rather than
+      // queuing a task that will fail at execution time.
+      const chromiumReady = await probeChromiumAvailable();
+      if (!chromiumReady) {
+        return res.status(503).json({
+          ok: false,
+          error: "browser_unavailable",
+          message: "Браузер (Chromium) недоступен — запустите `npx playwright install chromium` для установки браузера.",
+        });
+      }
 
       const targetUrl = lead.orderUrl || `https://kwork.ru/projects?search=${encodeURIComponent(lead.title)}`;
       const settings = await storage.getSettings();

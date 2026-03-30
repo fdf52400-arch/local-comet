@@ -101,8 +101,9 @@ async function ollamaCheck(config: ProviderConfig): Promise<ProviderCheckResult>
     if (err.name === "AbortError") {
       return { ok: false, status: "timeout", message: `Ollama (${base}): таймаут подключения` };
     }
-    // ECONNREFUSED or similar — port not listening
-    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(err.message || "");
+    // Node 20 fetch wraps ECONNREFUSED inside err.cause.code — check both message and cause
+    const rawMsg = `${err.message || ""} ${(err as any).cause?.code || ""}`;
+    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(rawMsg);
     return {
       ok: false,
       status: isRefused ? "unavailable" : "error",
@@ -171,7 +172,9 @@ async function lmstudioCheck(config: ProviderConfig): Promise<ProviderCheckResul
     if (err.name === "AbortError") {
       return { ok: false, status: "timeout", message: `LM Studio (${base}): таймаут подключения` };
     }
-    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(err.message || "");
+    // Node 20 fetch wraps ECONNREFUSED inside err.cause.code — check both message and cause
+    const rawMsg = `${err.message || ""} ${(err as any).cause?.code || ""}`;
+    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(rawMsg);
     return {
       ok: false,
       status: isRefused ? "unavailable" : "error",

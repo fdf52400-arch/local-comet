@@ -385,6 +385,33 @@ export function isBrowserBusy(): boolean {
   return browserLocked;
 }
 
+/**
+ * Chromium availability probe.
+ * Tries to resolve the Chromium executable path via Playwright's registry.
+ * Does NOT launch the browser — pure filesystem check.
+ * Result is cached after the first call so subsequent checks are O(1).
+ */
+let _chromiumAvailable: boolean | null = null;
+
+export async function probeChromiumAvailable(): Promise<boolean> {
+  if (_chromiumAvailable !== null) return _chromiumAvailable;
+  try {
+    const { chromium: pw } = await import("playwright");
+    const execPath = pw.executablePath();
+    const fs = await import("fs/promises");
+    await fs.access(execPath);
+    _chromiumAvailable = true;
+  } catch {
+    _chromiumAvailable = false;
+  }
+  return _chromiumAvailable;
+}
+
+/** Reset the cached chromium probe result (used in tests) */
+export function resetChromiumProbe(): void {
+  _chromiumAvailable = null;
+}
+
 function isUrlSafe(url: string): boolean {
   for (const pattern of DANGEROUS_URL_PATTERNS) {
     if (pattern.test(url)) return false;

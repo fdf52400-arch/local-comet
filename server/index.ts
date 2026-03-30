@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { probeChromiumAvailable } from "./agent-engine";
 
 const app = express();
 const httpServer = createServer(app);
@@ -61,6 +62,13 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+
+  // Probe Chromium binary availability at startup so the result is cached
+  // before any request arrives. This avoids a cold-probe delay on the first
+  // /api/computer/status or /api/computer/run request.
+  probeChromiumAvailable().then((available) => {
+    log(`Chromium binary: ${available ? "found" : "NOT FOUND (browser tasks will be rejected — run: npx playwright install chromium)"}`, "startup");
+  }).catch(() => { /* ignore */ });
 
   // Auto-seed Kwork demo data on first start
   try {
