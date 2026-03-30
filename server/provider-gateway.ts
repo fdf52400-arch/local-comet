@@ -11,6 +11,17 @@
  *   - Both http:// and https:// are preserved as-is.
  */
 
+/** Unified provider availability status for UI consumption */
+export type ProviderStatus = "available" | "unavailable" | "timeout" | "unsupported" | "error";
+
+export interface ProviderCheckResult {
+  ok: boolean;
+  status: ProviderStatus;
+  message: string;
+  /** HTTP status code from the remote, if a response was received */
+  httpStatus?: number;
+}
+
 interface ProviderConfig {
   providerType: string;
   baseUrl: string;
@@ -72,20 +83,31 @@ async function fetchWithTimeout(
 
 // ---- Ollama Adapter ----
 
-async function ollamaCheck(config: ProviderConfig): Promise<{ ok: boolean; message: string }> {
+async function ollamaCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
   const base = buildBaseUrl(config);
   const url = `${base}/api/tags`;
   try {
     const res = await fetchWithTimeout(url, {}, 5000);
     if (res.ok) {
-      return { ok: true, message: "Ollama доступен" };
+      return { ok: true, status: "available", message: "Ollama доступен" };
     }
-    return { ok: false, message: `Ollama вернул статус ${res.status}` };
+    return {
+      ok: false,
+      status: res.status === 404 ? "unsupported" : "unavailable",
+      message: `Ollama вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return { ok: false, message: `Ollama (${base}): таймаут подключения` };
+      return { ok: false, status: "timeout", message: `Ollama (${base}): таймаут подключения` };
     }
-    return { ok: false, message: `Не удалось подключиться к Ollama (${base}): ${err.message}` };
+    // ECONNREFUSED or similar — port not listening
+    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(err.message || "");
+    return {
+      ok: false,
+      status: isRefused ? "unavailable" : "error",
+      message: `Не удалось подключиться к Ollama (${base}): ${err.message}`,
+    };
   }
 }
 
@@ -131,20 +153,30 @@ async function ollamaChat(config: ProviderConfig, messages: ChatMessage[]): Prom
 
 // ---- LM Studio Adapter ----
 
-async function lmstudioCheck(config: ProviderConfig): Promise<{ ok: boolean; message: string }> {
+async function lmstudioCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
   const base = buildBaseUrl(config);
   const url = `${base}/v1/models`;
   try {
     const res = await fetchWithTimeout(url, {}, 5000);
     if (res.ok) {
-      return { ok: true, message: "LM Studio доступен" };
+      return { ok: true, status: "available", message: "LM Studio доступен" };
     }
-    return { ok: false, message: `LM Studio вернул статус ${res.status}` };
+    return {
+      ok: false,
+      status: res.status === 404 ? "unsupported" : "unavailable",
+      message: `LM Studio вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return { ok: false, message: `LM Studio (${base}): таймаут подключения` };
+      return { ok: false, status: "timeout", message: `LM Studio (${base}): таймаут подключения` };
     }
-    return { ok: false, message: `Не удалось подключиться к LM Studio (${base}): ${err.message}` };
+    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(err.message || "");
+    return {
+      ok: false,
+      status: isRefused ? "unavailable" : "error",
+      message: `Не удалось подключиться к LM Studio (${base}): ${err.message}`,
+    };
   }
 }
 
@@ -189,12 +221,12 @@ async function lmstudioChat(config: ProviderConfig, messages: ChatMessage[]): Pr
 
 // ---- Unified Gateway ----
 
-export async function checkProvider(config: ProviderConfig): Promise<{ ok: boolean; message: string }> {
+export async function checkProvider(config: ProviderConfig): Promise<ProviderCheckResult> {
   switch (config.providerType) {
     case "ollama":   return ollamaCheck(config);
     case "lmstudio": return lmstudioCheck(config);
     default:
-      return { ok: false, message: `Неизвестный провайдер: ${config.providerType}` };
+      return { ok: false, status: "unsupported", message: `Неизвестный провайдер: ${config.providerType}` };
   }
 }
 

@@ -5,7 +5,7 @@ import { checkProvider, listModels, chat, requestPlanFromModel } from "./provide
 import {
   closeBrowser, generateFallbackPlan, resolveConfirm, getPendingConfirm,
   executeManualAction, getPreviewState, takeScreenshot, setSelectedElement, getSelectedElement,
-  initBrowser, getSessionState,
+  initBrowser, getSessionState, isBrowserBusy,
   type AgentAction, type AgentRunConfig, type DOMElement,
 } from "./agent-engine";
 import { enqueueTask, cancelTask, getQueueStatus } from "./task-queue";
@@ -68,7 +68,60 @@ export async function registerRoutes(
       timestamp: new Date().toISOString(),
       service: "Local Comet",
       sseClients: getClientCount(),
+      browserBusy: isBrowserBusy(),
     });
+  });
+
+  // ---- Runtime status (computer + provider) ----
+  app.get("/api/computer/status", async (_req, res) => {
+    try {
+      const settings = await storage.getSettings();
+      const queueStatus = await getQueueStatus();
+
+      // Check provider availability if configured
+      let providerStatus: { ok: boolean; status: string; message: string } | null = null;
+      if (settings?.model && settings?.providerType) {
+        try {
+          providerStatus = await checkProvider({
+            providerType: settings.providerType,
+            baseUrl: settings.baseUrl,
+            port: settings.port,
+            model: settings.model,
+            temperature: parseFloat(settings.temperature),
+            maxTokens: settings.maxTokens,
+          });
+        } catch (e: any) {
+          providerStatus = { ok: false, status: "error", message: e.message };
+        }
+      }
+
+      res.json({
+        browserBusy: isBrowserBusy(),
+        queue: {
+          isProcessing: queueStatus.isProcessing,
+          runningTaskId: queueStatus.runningTask?.id ?? null,
+          queuedCount: queueStatus.queuedTasks.length,
+        },
+        provider: settings ? {
+          type: settings.providerType,
+          model: settings.model || null,
+          configured: !!settings.model,
+          availability: providerStatus,
+        } : null,
+        capabilities: {
+          terminalExec: true,
+          codeSandbox: true,
+          browserAgent: true,
+          /**
+           * Real browser execution is available when the browser is not busy.
+           * When busy, agent tasks are queued and will execute sequentially.
+           */
+          browserAvailable: !isBrowserBusy(),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ---- SSE Stream ----
@@ -789,7 +842,7 @@ export async function registerRoutes(
   app.post("/api/terminal/files", (req, res) => {
     try {
       const { filename, content, sessionId } = req.body;
-      if (!filename || !content === undefined) {
+      if (!filename || content === undefined || content === null) {
         return res.status(400).json({ error: "Требуются filename и content" });
       }
       const sid = sessionId || "default";
@@ -978,6 +1031,8 @@ export async function registerRoutes(
         whyFits: JSON.stringify(scoring.whyFits),
         keyRisks: JSON.stringify(scoring.keyRisks),
         status: "new",
+        isShortlisted: 0,
+        computerTaskId: null,
         receivedAt: body.receivedAt || new Date().toISOString(),
       });
       res.json(lead);
@@ -990,8 +1045,11 @@ export async function registerRoutes(
   app.patch("/api/kwork/leads/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const updates = req.body;
-      const updated = await storage.updateKworkLead(id, updates);
+      if (isNaN(id)) return res.status(400).json({ error: "Некорректный id" });
+
+      // Prevent overwriting the id itself
+      const { id: _ignoreId, createdAt: _ignoreCreatedAt, ...safeUpdates } = req.body;
+      const updated = await storage.updateKworkLead(id, safeUpdates);
       if (!updated) return res.status(404).json({ error: "Лид не найден" });
       res.json(updated);
     } catch (err: any) {
@@ -1153,6 +1211,154 @@ export async function registerRoutes(
         flagCloudVmFit: !!(body.flagCloudVmFit),
       });
       res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** POST /api/kwork/parse-brief — extract fields from raw pasted brief text */
+  app.post("/api/kwork/parse-brief", (req, res) => {
+    try {
+      const { text } = req.body as { text: string };
+      if (!text) return res.status(400).json({ error: "text is required" });
+
+      // Heuristic extraction from pasted Kwork brief / email text
+      const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+      // Title: first non-empty line that looks like a project title
+      const title = lines.find(l => l.length > 10 && l.length < 200 && !l.match(/^\d+/)) || "";
+
+      // Budget: look for number patterns with ₽/руб/rub
+      const budgetMatch = text.match(/(\d[\d\s]{2,})\s*(?:₽|руб|rub|тыс\.?\s*₽)/i);
+      let budget = 0;
+      let budgetRaw = "";
+      if (budgetMatch) {
+        budget = parseInt(budgetMatch[1].replace(/\s/g, "")) || 0;
+        budgetRaw = budgetMatch[0].trim();
+        // If value looks like thousands (e.g. "75 тыс ₽")
+        if (text.match(/тыс/i) && budget < 1000) budget *= 1000;
+      }
+
+      // Category: look for known category keywords
+      const catMap: Record<string, string> = {
+        telegram: "Telegram боты", bot: "Telegram боты", бот: "Telegram боты",
+        gpt: "AI / Чат-боты", llm: "AI / LLM", "ai": "AI / Автоматизация",
+        автоматизац: "Интеграции / автоматизация", n8n: "Интеграции / автоматизация",
+        парсинг: "Парсинг / автоматизация", playwright: "Парсинг / автоматизация",
+        crm: "CRM / интеграции", react: "Web разработка", сайт: "Web разработка",
+        mobile: "Мобильные приложения", ios: "Мобильные приложения", android: "Мобильные приложения",
+      };
+      const textLower = text.toLowerCase();
+      let category = "";
+      for (const [kw, cat] of Object.entries(catMap)) {
+        if (textLower.includes(kw)) { category = cat; break; }
+      }
+
+      // URL: look for kwork.ru/projects links
+      const urlMatch = text.match(/https?:\/\/kwork\.ru\/[^\s]+/i);
+      const orderUrl = urlMatch ? urlMatch[0] : "";
+
+      // Auto-flags
+      const flagFitsProfile = /ai|gpt|llm|telegram|автоматизац|парсинг|playwright|интеграц|api|webhook|n8n/i.test(text);
+      const flagNeedsCall = /созвон|звонок|по телефону|встреч|обсуд/i.test(text);
+      const flagNeedsAccess = /доступ|аккаунт|логин|credentials/i.test(text);
+      const flagNeedsDesign = /дизайн|figma|макет|ui\/ux|ui ux/i.test(text);
+      const flagNeedsMobile = /мобильн|ios|android|flutter|react native|kotlin|swift/i.test(text);
+      const flagCloudVmFit = /vps|сервер|cloud|деплой|docker|linux/i.test(text);
+
+      res.json({
+        title,
+        budget,
+        budgetRaw,
+        category,
+        orderUrl,
+        brief: text.slice(0, 2000),
+        flagFitsProfile,
+        flagNeedsCall,
+        flagNeedsAccess,
+        flagNeedsDesign,
+        flagNeedsMobile,
+        flagCloudVmFit,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** POST /api/kwork/response-draft — generate a response draft for a lead */
+  app.post("/api/kwork/response-draft", async (req, res) => {
+    try {
+      const { leadId } = req.body as { leadId: number };
+      const lead = await storage.getKworkLead(leadId);
+      if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+      const whyFits = (() => { try { return JSON.parse(lead.whyFits) as string[]; } catch { return []; } })();
+      const keyRisks = (() => { try { return JSON.parse(lead.keyRisks) as string[]; } catch { return []; } })();
+
+      // Try to get an LLM-generated draft if provider is available
+      const settings = await storage.getSettings();
+      let draft = "";
+      let source: "model" | "template" = "template";
+
+      if (settings?.model && settings.model.length > 0) {
+        try {
+          const providerConfig = {
+            providerType: settings.providerType,
+            baseUrl: settings.baseUrl,
+            port: settings.port,
+            model: settings.model,
+            temperature: parseFloat(settings.temperature) || 0.7,
+            maxTokens: Math.min(settings.maxTokens, 800),
+          };
+
+          const systemPrompt = `Ты — помощник фрилансера на платформе Kwork. Составь краткий, профессиональный отклик на заказ.
+Отклик должен быть 3-5 абзацев на русском языке. Не используй шаблонные фразы типа «рад сотрудничеству».
+Укажи конкретные технические навыки. Не обещай невозможного. Закончи вопросом по ТЗ.`;
+
+          const userMsg = `Заказ: ${lead.title}
+Бюджет: ${lead.budgetRaw || lead.budget + " ₽"}
+ТЗ: ${lead.brief || "не указано"}
+Почему подходит: ${whyFits.slice(0, 3).join("; ")}
+Риски: ${keyRisks.slice(0, 2).join("; ") || "нет"}`;
+
+          const { chat } = await import("./provider-gateway");
+          const response = await chat(providerConfig, [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMsg },
+          ]);
+          draft = response.content;
+          source = "model";
+        } catch {
+          // Fall through to template
+        }
+      }
+
+      // Template fallback
+      if (!draft) {
+        const stacks: string[] = [];
+        if (/ai|gpt|llm/i.test(lead.brief + lead.title + lead.category)) stacks.push("AI/LLM агенты");
+        if (/telegram|бот/i.test(lead.brief + lead.title + lead.category)) stacks.push("Telegram боты");
+        if (/playwright|парсинг/i.test(lead.brief + lead.title + lead.category)) stacks.push("browser automation (Playwright)");
+        if (/n8n|автоматизац/i.test(lead.brief + lead.title + lead.category)) stacks.push("workflow автоматизация (n8n)");
+        if (/api|webhook|интеграц/i.test(lead.brief + lead.title + lead.category)) stacks.push("API интеграции");
+        if (/react|vue|next/i.test(lead.brief + lead.title + lead.category)) stacks.push("React/Node.js");
+        if (stacks.length === 0) stacks.push("автоматизация и backend разработка");
+
+        draft = `Здравствуйте! Изучил ваш заказ «${lead.title}».
+
+Специализируюсь на ${stacks.join(", ")}. ${lead.brief ? `В вашем проекте вижу конкретную задачу: ${lead.brief.slice(0, 150).trim()}${lead.brief.length > 150 ? "..." : ""}` : ""}
+
+Из опыта: выстраиваю решения поэтапно, с промежуточными результатами и понятным деплоем на VPS/cloud. Стараюсь работать асинхронно — без лишних созвонов.
+
+${whyFits.length > 0 ? `Могу взяться за: ${whyFits.slice(0, 2).join("; ")}.` : ""}
+${keyRisks.length > 0 ? `
+Дополнительно уточню: ${keyRisks[0]}.` : ""}
+
+Подскажите: есть ли у вас примеры/референсы или готовое ТЗ в виде документа?`;
+        source = "template";
+      }
+
+      res.json({ draft, source, leadId });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

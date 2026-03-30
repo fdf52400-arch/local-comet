@@ -129,9 +129,18 @@ const CONFIRM_ACTIONS = new Set(["click_link", "fill_input", "click_button"]);
 // Dangerous URL patterns
 const DANGEROUS_URL_PATTERNS = [/javascript:/i, /data:/i, /^file:/i];
 
+/**
+ * Global shared browser instance.
+ * NOTE: The task queue processes one task at a time, so a single shared browser/page
+ * is safe for sequential execution. If parallel execution is ever introduced,
+ * each concurrent session must get its own BrowserContext + Page.
+ */
 let browser: Browser | null = null;
 let context: BrowserContext | null = null;
 let page: Page | null = null;
+
+/** Whether the browser is currently occupied by an active agent run */
+let browserLocked = false;
 
 // Confirm flow state (keyed by taskId)
 interface PendingConfirm {
@@ -325,8 +334,29 @@ export async function takeScreenshot(): Promise<string | null> {
 // ─── Browser management ───────────────────────────────────────────────────
 
 export async function initBrowser(): Promise<void> {
+  // If existing browser has crashed, clean up before re-launching
+  if (browser) {
+    try {
+      // Quick health check: if the browser process is gone, this throws
+      await browser.version();
+    } catch {
+      // Browser crashed or disconnected — reset all handles
+      browser = null;
+      context = null;
+      page = null;
+      browserLocked = false;
+    }
+  }
+
   if (!browser) {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+      ],
+    });
     context = await browser.newContext({
       userAgent: "LocalComet/5.0 (Browser Agent)",
       viewport: { width: 1280, height: 800 },
@@ -337,16 +367,22 @@ export async function initBrowser(): Promise<void> {
 
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    await browser.close();
+    try { await browser.close(); } catch { /* ignore errors on close */ }
     browser = null;
     context = null;
     page = null;
+    browserLocked = false;
   }
 }
 
 function getPage(): Page {
   if (!page) throw new Error("Браузер не инициализирован");
   return page;
+}
+
+/** Returns true if the browser is currently running an agent task */
+export function isBrowserBusy(): boolean {
+  return browserLocked;
 }
 
 function isUrlSafe(url: string): boolean {
@@ -772,8 +808,26 @@ export async function runAgentLoop(config: AgentRunConfig): Promise<{
   results: AgentStepResult[];
   snapshots: PageSnapshot[];
   planSource: string;
+  degraded?: boolean;
+  degradedReason?: string;
 }> {
   const { url, goal, taskId, sessionId, safetyMode, maxSteps, providerConfig } = config;
+
+  // Guard: if the browser is already running a task, return a degraded response
+  // rather than corrupting the shared browser state.
+  if (browserLocked) {
+    const degradedMsg = "Браузер занят другой задачей — degraded режим (только евристический план, без выполнения)";
+    emit(taskId, sessionId, { type: "warning", step: 0, detail: degradedMsg, timestamp: new Date().toISOString() });
+    const fallbackPlan = generateFallbackPlan(goal, url);
+    return {
+      results: [{ action: "degraded", status: "warning", detail: degradedMsg }],
+      snapshots: [],
+      planSource: "heuristic",
+      degraded: true,
+      degradedReason: degradedMsg,
+    };
+  }
+
   const results: AgentStepResult[] = [];
   const snapshots: PageSnapshot[] = [];
   const executedActions: string[] = [];
@@ -781,6 +835,8 @@ export async function runAgentLoop(config: AgentRunConfig): Promise<{
   let currentStep = 0;
   let lastSnapshot: PageSnapshot | null = null;
 
+  browserLocked = true;
+  try {
   await initBrowser();
   const p = getPage();
 
@@ -959,6 +1015,9 @@ export async function runAgentLoop(config: AgentRunConfig): Promise<{
   });
 
   return { results, snapshots, planSource };
+  } finally {
+    browserLocked = false;
+  }
 }
 
 /**

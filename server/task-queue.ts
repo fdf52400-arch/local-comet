@@ -19,7 +19,13 @@ interface QueueConfig {
 }
 
 let isProcessing = false;
-let currentConfig: QueueConfig | null = null;
+
+/**
+ * Per-task config store: taskId -> QueueConfig.
+ * Ensures each queued task uses the config it was submitted with,
+ * even if a newer task is enqueued with different settings while the queue runs.
+ */
+const taskConfigs = new Map<number, QueueConfig>();
 
 /**
  * Enqueue a task and start processing if not already running
@@ -28,8 +34,9 @@ export async function enqueueTask(
   task: AgentTask,
   config: QueueConfig,
 ): Promise<void> {
-  currentConfig = config;
-  
+  // Store per-task config so it survives concurrent enqueue calls
+  taskConfigs.set(task.id, config);
+
   broadcast({
     type: "queue_update" as any,
     taskId: task.id,
@@ -49,10 +56,17 @@ export async function enqueueTask(
   }
 }
 
+/** Default fallback config used when a task's own config is missing */
+const DEFAULT_CONFIG: QueueConfig = {
+  maxSteps: DEFAULT_MAX_STEPS,
+  providerConfig: null,
+  safetyMode: "readonly",
+};
+
 /**
  * Process the task queue — runs tasks one at a time
  */
-async function processQueue(config: QueueConfig): Promise<void> {
+async function processQueue(fallbackConfig: QueueConfig): Promise<void> {
   if (isProcessing) return;
   isProcessing = true;
 
@@ -68,7 +82,12 @@ async function processQueue(config: QueueConfig): Promise<void> {
         runningTask = nextTask;
       }
 
-      await executeTask(runningTask, config);
+      // Use per-task config if available, fall back to the config provided at queue start
+      const taskConfig = taskConfigs.get(runningTask.id) ?? fallbackConfig ?? DEFAULT_CONFIG;
+      await executeTask(runningTask, taskConfig);
+
+      // Clean up stored config after execution
+      taskConfigs.delete(runningTask.id);
 
       // Small delay between tasks
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -99,6 +118,7 @@ async function executeTask(task: AgentTask, config: QueueConfig): Promise<void> 
     await storage.addLog({
       taskId: task.id,
       sessionId,
+      workspaceId: task.workspaceId || 1,
       stepIndex: 0,
       action: "init",
       detail: `Начало задачи: ${task.goal}`,
@@ -131,6 +151,7 @@ async function executeTask(task: AgentTask, config: QueueConfig): Promise<void> 
     await storage.addLog({
       taskId: task.id,
       sessionId,
+      workspaceId: task.workspaceId || 1,
       stepIndex: results.length + 1,
       action: "finish",
       detail: hasErrors ? "Задача завершена с ошибками" : "Задача выполнена успешно",
@@ -153,6 +174,7 @@ async function executeTask(task: AgentTask, config: QueueConfig): Promise<void> 
     await storage.addLog({
       taskId: task.id,
       sessionId,
+      workspaceId: task.workspaceId || 1,
       stepIndex: 0,
       action: "error",
       detail: `Ошибка: ${err.message}`,

@@ -725,29 +725,42 @@ function TerminalPanel({ sessionId }: { sessionId: string }) {
       <ScrollArea className="flex-1 bg-black/40">
         <div className="p-2 space-y-2 font-mono text-[11px]">
           {history.length === 0 && (
-            <div className="text-muted-foreground/40 py-6 text-center">
-              <p>Изолированный shell-терминал</p>
-              <p className="text-[10px] mt-1">Рабочая директория: /tmp/local-comet-sandbox/...</p>
+            <div className="text-muted-foreground/40 py-6 text-center space-y-1">
+              <p className="text-muted-foreground/60 text-[11px]">Shell-сандбокс</p>
+              {filesQuery.data?.cwd ? (
+                <p className="text-[10px] font-mono text-muted-foreground/30">{filesQuery.data.cwd}</p>
+              ) : (
+                <p className="text-[10px] text-muted-foreground/30">Загрузка сессии…</p>
+              )}
+              <p className="text-[10px] text-muted-foreground/25 mt-2">Пример: ls, pwd, python3 -c &quot;print(1+1)&quot;</p>
             </div>
           )}
           {history.map((h, i) => (
-            <div key={i} className="space-y-0.5">
+            <div key={i} className={`space-y-0.5 pb-1 border-b border-border/10 last:border-0 ${
+              h.blocked ? "" : h.code === 0 ? "" : h.code !== null ? "" : ""
+            }`}>
               <div className="flex items-center gap-1.5">
-                <span className="text-primary/60">$</span>
-                <span className="text-foreground">{h.cmd}</span>
-                <span className="text-muted-foreground/30 text-[9px] ml-auto">{h.ms}ms</span>
+                <span className={h.blocked ? "text-orange-400/60" : h.code === 0 || h.code === null ? "text-primary/60" : "text-red-400/60"}>$</span>
+                <span className="text-foreground/90">{h.cmd}</span>
+                <div className="ml-auto flex items-center gap-1.5">
+                  <span className="text-muted-foreground/25 text-[9px]">{h.ms}ms</span>
+                  {h.blocked ? (
+                    <span className="text-[9px] text-orange-400/70 bg-orange-500/10 px-1 rounded">BLOCKED</span>
+                  ) : h.code !== null && (
+                    <span className={`text-[9px] px-1 rounded ${
+                      h.code === 0 ? "text-emerald-400/70 bg-emerald-500/10" : "text-red-400/70 bg-red-500/10"
+                    }`}>exit {h.code}</span>
+                  )}
+                </div>
               </div>
               {h.blocked && (
-                <div className="text-orange-400 pl-4">[BLOCKED] {h.err}</div>
+                <pre className="text-orange-400/80 pl-3 whitespace-pre-wrap break-all">{h.err}</pre>
               )}
               {!h.blocked && h.out && (
-                <pre className="text-emerald-400/80 pl-4 whitespace-pre-wrap break-all">{h.out}</pre>
+                <pre className="text-emerald-400/80 pl-3 whitespace-pre-wrap break-all">{h.out}</pre>
               )}
               {!h.blocked && h.err && (
-                <pre className="text-red-400/80 pl-4 whitespace-pre-wrap break-all">{h.err}</pre>
-              )}
-              {!h.blocked && h.code !== 0 && h.code !== null && (
-                <div className="text-red-400/60 pl-4 text-[10px]">exit {h.code}</div>
+                <pre className="text-red-400/80 pl-3 whitespace-pre-wrap break-all">{h.err}</pre>
               )}
             </div>
           ))}
@@ -860,18 +873,32 @@ function SandboxPanel({ sessionId }: { sessionId: string }) {
         </Button>
       </div>
       {/* Output */}
-      {result && (
-        <div className="border-t border-border px-2 py-1.5 bg-black/30 max-h-48 overflow-auto shrink-0">
-          <div className="flex items-center gap-2 mb-1">
-            <Badge variant="outline" className={`text-[9px] px-1 py-0 ${result.exitCode === 0 ? "text-emerald-400" : "text-red-400"}`}>
-              exit {result.exitCode}
-            </Badge>
-            <span className="text-[9px] text-muted-foreground">{result.durationMs}ms</span>
-            <span className="text-[9px] text-muted-foreground">{result.language}</span>
+      {isRunning && (
+        <div className="border-t border-border px-3 py-3 bg-black/20 shrink-0 space-y-1.5" data-testid="sandbox-output-loading">
+          <div className="flex items-center gap-2">
+            <Loader2 className="h-3 w-3 animate-spin text-primary/60" />
+            <span className="text-[10px] text-muted-foreground">Выполнение…</span>
           </div>
-          {result.output && (
+          <div className="h-2 bg-muted/20 rounded animate-pulse w-3/4" />
+          <div className="h-2 bg-muted/20 rounded animate-pulse w-1/2" />
+        </div>
+      )}
+      {!isRunning && result && (
+        <div className="border-t border-border px-2 py-1.5 bg-black/30 max-h-48 overflow-auto shrink-0" data-testid="sandbox-output">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+              result.exitCode === 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+            }`}>
+              exit {result.exitCode}
+            </span>
+            <span className="text-[9px] text-muted-foreground">{result.durationMs}ms</span>
+            <span className="text-[9px] text-muted-foreground capitalize">{result.language}</span>
+          </div>
+          {result.output ? (
             <pre className="text-[10px] font-mono text-emerald-400/90 whitespace-pre-wrap break-all">{result.output}</pre>
-          )}
+          ) : !result.error ? (
+            <p className="text-[10px] text-muted-foreground/40 italic">Нет вывода</p>
+          ) : null}
           {result.error && (
             <pre className="text-[10px] font-mono text-red-400/90 whitespace-pre-wrap break-all">{result.error}</pre>
           )}
@@ -897,6 +924,7 @@ export default function ControlCenter() {
 
   // --- Command input ---
   const [commandValue, setCommandValue] = useState("");
+  const [commandHint, setCommandHint] = useState<string | null>(null);
   const [browsingHistory, setBrowsingHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
@@ -973,13 +1001,27 @@ export default function ControlCenter() {
     }
   }, [tabsQuery.data]);
 
-  // Provider check
+  // Provider status — silent auto-check when settings load
+  const [providerStatus, setProviderStatus] = useState<{ ok: boolean; checked: boolean; checking: boolean }>({ ok: false, checked: false, checking: false });
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    const s = settingsQuery.data;
+    setProviderStatus(prev => ({ ...prev, checking: true }));
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || 11434 })
+      .then(r => r.json())
+      .then(d => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }))
+      .catch(() => setProviderStatus({ ok: false, checked: true, checking: false }));
+  }, [settingsQuery.data]);
+
+  // Provider check (manual, used in ModelSettings collapsible)
   const checkMutation = useMutation({
     mutationFn: async () => {
       const s = settingsQuery.data;
       const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || 11434 });
       return res.json();
     },
+    onSuccess: (d) => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }),
   });
 
   // Confirm mutation
@@ -1058,10 +1100,18 @@ export default function ControlCenter() {
     setActiveTabId(null);
   }, []);
 
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [showWorkspaceInput, setShowWorkspaceInput] = useState(false);
   const handleCreateWorkspace = useCallback(() => {
-    const name = prompt("Название нового workspace:");
-    if (name?.trim()) createWorkspaceMutation.mutate(name.trim());
-  }, [createWorkspaceMutation]);
+    setShowWorkspaceInput(true);
+  }, []);
+  const handleWorkspaceSubmit = useCallback(() => {
+    if (newWorkspaceName.trim()) {
+      createWorkspaceMutation.mutate(newWorkspaceName.trim());
+      setNewWorkspaceName("");
+      setShowWorkspaceInput(false);
+    }
+  }, [newWorkspaceName, createWorkspaceMutation]);
 
   const handleSessionSwitch = useCallback((sessionId: string) => {
     setActiveSession(sessionId);
@@ -1386,7 +1436,7 @@ export default function ControlCenter() {
       {/* ═══════════════════════════════════════════════════════════════════════════
           COMMAND BAR — the single main input (Computer-first)
           ═══════════════════════════════════════════════════════════════════════════ */}
-      <div className="h-12 border-b border-border flex items-center gap-2 px-3 shrink-0 bg-card/30" data-testid="command-bar">
+      <div className="min-h-[48px] border-b border-border flex items-center gap-2 px-3 py-1.5 shrink-0 bg-card/30" data-testid="command-bar">
         {/* Nav buttons */}
         <div className="flex items-center gap-0.5">
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleBack} disabled={historyIdx <= 0} data-testid="button-back">
@@ -1401,39 +1451,69 @@ export default function ControlCenter() {
         </div>
 
         {/* Main Command Input */}
-        <div className="flex-1 flex items-center gap-2 h-9 bg-muted/40 hover:bg-muted/60 focus-within:bg-muted/70 focus-within:ring-1 focus-within:ring-primary/30 rounded-lg px-3 transition-all" data-testid="command-input-wrapper">
-          {isRunning ? (
-            <Loader2 className="h-3.5 w-3.5 text-primary animate-spin shrink-0" />
-          ) : actionExecuting ? (
-            <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin shrink-0" />
-          ) : (
-            <CommandIcon className="h-3.5 w-3.5 text-primary/60 shrink-0" />
-          )}
-          <input
-            ref={commandInputRef}
-            type="text"
-            value={commandValue}
-            onChange={e => setCommandValue(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleCommandSubmit(); }}
-            placeholder="Напишите команду: «открой google», «найди в google …», или любую задачу"
-            className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/40"
-            data-testid="input-command"
-          />
-          {commandValue && (
-            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0" onClick={() => setCommandValue("")}>
-              <X className="h-3 w-3" />
+        <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex items-center gap-2 h-9 bg-muted/40 hover:bg-muted/60 focus-within:bg-muted/70 focus-within:ring-1 focus-within:ring-primary/30 rounded-lg px-3 transition-all" data-testid="command-input-wrapper">
+            {isRunning || computerRunMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 text-primary animate-spin shrink-0" />
+            ) : actionExecuting ? (
+              <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin shrink-0" />
+            ) : providerStatus.checking ? (
+              <Loader2 className="h-3.5 w-3.5 text-muted-foreground/40 animate-spin shrink-0" />
+            ) : providerStatus.checked && !providerStatus.ok ? (
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-400/70 shrink-0" aria-label="Провайдер недоступен — деградированный режим" />
+            ) : (
+              <CommandIcon className="h-3.5 w-3.5 text-primary/60 shrink-0" />
+            )}
+            <input
+              ref={commandInputRef}
+              type="text"
+              value={commandValue}
+              onChange={e => {
+                const v = e.target.value;
+                setCommandValue(v);
+                if (v.trim().length > 2) {
+                  const intent = parseIntent(v.trim());
+                  if (intent.url && (intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search")) {
+                    setCommandHint(`→ ${intent.url}`);
+                  } else {
+                    setCommandHint(null);
+                  }
+                } else {
+                  setCommandHint(null);
+                }
+              }}
+              onKeyDown={e => { if (e.key === "Enter") handleCommandSubmit(); }}
+              placeholder="Напишите команду: «открой google», «найди в google …», или любую задачу"
+              className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/40"
+              data-testid="input-command"
+            />
+            {commandValue && (
+              <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0" onClick={() => setCommandValue("")}>
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-primary hover:text-primary"
+              onClick={handleCommandSubmit}
+              disabled={!commandValue.trim() || isRunning || computerRunMutation.isPending}
+              data-testid="button-command-submit"
+            >
+              <Send className="h-3.5 w-3.5" />
             </Button>
+          </div>
+          {/* Inline hints row */}
+          {(commandHint || (providerStatus.checked && !providerStatus.ok && !providerStatus.checking)) && (
+            <div className="flex items-center gap-3 px-3 mt-0.5">
+              {commandHint && (
+                <span className="text-[10px] text-muted-foreground/50 font-mono truncate">{commandHint}</span>
+              )}
+              {providerStatus.checked && !providerStatus.ok && !providerStatus.checking && (
+                <span className="text-[10px] text-amber-400/70 ml-auto shrink-0" data-testid="provider-offline-hint">Деградированный режим — LLM недоступен</span>
+              )}
+            </div>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 shrink-0 text-primary hover:text-primary"
-            onClick={handleCommandSubmit}
-            disabled={!commandValue.trim()}
-            data-testid="button-command-submit"
-          >
-            <Send className="h-3.5 w-3.5" />
-          </Button>
         </div>
 
         {/* Sidecar toggle */}
@@ -1629,6 +1709,18 @@ export default function ControlCenter() {
               {sidecarMode === "computer" && (
                 <div className="flex-1 flex flex-col min-h-0">
 
+                  {/* ── Degraded mode banner (no LLM) ── */}
+                  {providerStatus.checked && !providerStatus.ok && !isRunning && (
+                    <div className="px-3 py-2 border-b border-amber-500/20 bg-amber-500/5 flex items-start gap-2 shrink-0" data-testid="degraded-mode-banner">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="text-[10px] text-amber-400/90 leading-relaxed">
+                        <span className="font-semibold">Деградированный режим</span> — провайдер недоступен.
+                        { }Задачи будут выполняться без LLM по шаблонному плану.
+                        { }<Link href="/settings"><span className="underline cursor-pointer hover:text-amber-300">Настройки</span></Link>
+                      </div>
+                    </div>
+                  )}
+
                   {/* ── Active Mission Card ── */}
                   {activeMission ? (
                     <div className="border-b border-border">
@@ -1665,12 +1757,24 @@ export default function ControlCenter() {
 
                   {/* ── Live event log (secondary, collapsed by default if mission visible) ── */}
                   {liveEvents.length > 0 && (
-                    <ScrollArea className="flex-1">
-                      <div className="p-2 space-y-0">
-                        {liveEvents.map((event, i) => <LiveLogEntry key={i} event={event} />)}
-                        <div ref={sidecarLogRef} />
+                    <>
+                      <div className="flex items-center gap-2 px-3 py-1 border-b border-border/30 shrink-0">
+                        <span className="text-[9px] text-muted-foreground/40 uppercase tracking-wider flex-1">Живой лог ({liveEvents.length})</span>
+                        <button
+                          onClick={() => setLiveEvents([])}
+                          className="text-[9px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors"
+                          data-testid="button-clear-log"
+                        >
+                          очистить
+                        </button>
                       </div>
-                    </ScrollArea>
+                      <ScrollArea className="flex-1">
+                        <div className="p-2 space-y-0">
+                          {liveEvents.map((event, i) => <LiveLogEntry key={i} event={event} />)}
+                          <div ref={sidecarLogRef} />
+                        </div>
+                      </ScrollArea>
+                    </>
                   )}
                 </div>
               )}
@@ -1680,24 +1784,27 @@ export default function ControlCenter() {
                 <div className="flex-1 flex flex-col min-h-0">
                   {/* Task input area (secondary — for manual URL+goal) */}
                   <div className="p-3 border-b border-border space-y-2">
-                    <div className="flex gap-1.5">
-                      <Globe className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0 mt-2" />
+                    <div>
+                      <label className="text-[10px] text-muted-foreground/50 block mb-0.5">Цель / задача</label>
+                      <Textarea
+                        placeholder="Что нужно сделать? (или напишите в командную строку выше)"
+                        value={goalText}
+                        onChange={e => setGoalText(e.target.value)}
+                        className="min-h-[48px] text-xs resize-none"
+                        rows={2}
+                        data-testid="input-goal-text"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground/40 block mb-0.5">Стартовый URL (необязательно)</label>
                       <Input
-                        placeholder="URL (опционально)"
+                        placeholder="https://... — оставьте пустым для авторешения"
                         value={targetUrl}
                         onChange={e => setTargetUrl(e.target.value)}
-                        className="h-7 text-[11px] font-mono"
+                        className="h-7 text-[11px] font-mono text-muted-foreground"
                         data-testid="input-target-url"
                       />
                     </div>
-                    <Textarea
-                      placeholder="Что нужно сделать?"
-                      value={goalText}
-                      onChange={e => setGoalText(e.target.value)}
-                      className="min-h-[48px] text-xs resize-none"
-                      rows={2}
-                      data-testid="input-goal-text"
-                    />
                     <div className="flex gap-1.5">
                       <Button
                         onClick={() => {
@@ -1751,14 +1858,17 @@ export default function ControlCenter() {
               {sidecarMode === "research" && (
                 <div className="flex-1 flex flex-col min-h-0">
                   <div className="p-3 space-y-2">
-                    <Textarea
-                      placeholder="Что исследовать?"
-                      value={goalText}
-                      onChange={e => setGoalText(e.target.value)}
-                      className="min-h-[60px] text-xs resize-none"
-                      rows={3}
-                      data-testid="input-research-query"
-                    />
+                    <div>
+                      <label className="text-[10px] text-muted-foreground/50 block mb-0.5">Тема исследования</label>
+                      <Textarea
+                        placeholder="Что исследовать? Агент проанализирует несколько источников"
+                        value={goalText}
+                        onChange={e => setGoalText(e.target.value)}
+                        className="min-h-[60px] text-xs resize-none"
+                        rows={3}
+                        data-testid="input-research-query"
+                      />
+                    </div>
                     <Button
                       onClick={() => {
                         if (goalText) {
@@ -1859,9 +1969,29 @@ export default function ControlCenter() {
 
                   {/* Action buttons */}
                   <div className="flex gap-1.5 flex-wrap">
-                    <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleCreateWorkspace} data-testid="button-new-workspace">
-                      <Plus className="h-2.5 w-2.5" /> Workspace
-                    </Button>
+                    {showWorkspaceInput ? (
+                      <div className="flex gap-1 flex-1">
+                        <Input
+                          autoFocus
+                          value={newWorkspaceName}
+                          onChange={e => setNewWorkspaceName(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") handleWorkspaceSubmit(); if (e.key === "Escape") { setShowWorkspaceInput(false); setNewWorkspaceName(""); } }}
+                          placeholder="Имя workspace…"
+                          className="h-6 text-[10px] flex-1"
+                          data-testid="input-workspace-name"
+                        />
+                        <Button size="sm" className="h-6 text-[9px] px-2" onClick={handleWorkspaceSubmit} disabled={!newWorkspaceName.trim() || createWorkspaceMutation.isPending}>
+                          {createWorkspaceMutation.isPending ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <CheckCircle2 className="h-2.5 w-2.5" />}
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-6 text-[9px] px-1" onClick={() => { setShowWorkspaceInput(false); setNewWorkspaceName(""); }}>
+                          <X className="h-2.5 w-2.5" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleCreateWorkspace} data-testid="button-new-workspace">
+                        <Plus className="h-2.5 w-2.5" /> Workspace
+                      </Button>
+                    )}
                     <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleCreateSession} data-testid="button-new-session">
                       <Plus className="h-2.5 w-2.5" /> Сессия
                     </Button>

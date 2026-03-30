@@ -129,6 +129,8 @@ export interface SandboxResult {
   exitCode: number | null;
   durationMs: number;
   language: CodeLanguage;
+  /** Files present in the sandbox dir after execution (artifacts) */
+  files?: string[];
 }
 
 /**
@@ -160,13 +162,28 @@ export async function runCodeSandbox(
         command = `node "${tmpFile}"`;
         break;
       case "typescript": {
-        // Try ts-node, fall back to node with transpile
+        // Try ts-node first, then tsx, then fall back to a real transpile via esbuild/tsc
         const hasTsNode = await commandExists("ts-node");
+        const hasTsx = await commandExists("tsx");
+        const hasEsbuild = await commandExists("esbuild");
         if (hasTsNode) {
           command = `ts-node --transpile-only "${tmpFile}"`;
+        } else if (hasTsx) {
+          command = `tsx "${tmpFile}"`;
+        } else if (hasEsbuild) {
+          // Transpile to a temp JS file, then run
+          const jsFile = tmpFile.replace(/\.ts$/, ".js");
+          command = `esbuild --bundle=false "${tmpFile}" --outfile="${jsFile}" && node "${jsFile}"`;
         } else {
-          // Strip type annotations crudely and run as JS
-          command = `node "${tmpFile}"`;
+          // No TypeScript runner available — report honestly instead of silently failing
+          fs.unlinkSync(tmpFile);
+          return {
+            output: "",
+            error: "TypeScript ранайм недоступен (ts-node, tsx и esbuild не найдены). Установите ts-node (\'npm i -g ts-node typescript\') или используйте javascript.",
+            exitCode: 1,
+            durationMs: Date.now() - start,
+            language,
+          };
         }
         break;
       }
@@ -194,23 +211,41 @@ export async function runCodeSandbox(
       shell: "/bin/bash",
     });
 
+    const artifacts = listSandboxFiles_internal(cwd);
     return {
       output: stdout.slice(0, 8000),
       error: stderr.slice(0, 2000),
       exitCode: 0,
       durationMs: Date.now() - start,
       language,
+      files: artifacts,
     };
   } catch (err: any) {
+    const artifacts = listSandboxFiles_internal(cwd);
     return {
       output: (err.stdout || "").slice(0, 8000),
       error: (err.stderr || err.message || "").slice(0, 2000),
       exitCode: err.code ?? 1,
       durationMs: Date.now() - start,
       language,
+      files: artifacts,
     };
   } finally {
     try { fs.existsSync(tmpFile) && fs.unlinkSync(tmpFile); } catch {}
+    // Also clean up any transpiled .js if we used esbuild path
+    const jsFile = tmpFile.replace(/\.ts$/, ".js");
+    if (jsFile !== tmpFile) {
+      try { fs.existsSync(jsFile) && fs.unlinkSync(jsFile); } catch {}
+    }
+  }
+}
+
+/** Internal helper: list files without creating the dir */
+function listSandboxFiles_internal(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir).filter(f => !f.startsWith("__sandbox_"));
+  } catch {
+    return [];
   }
 }
 
@@ -223,11 +258,11 @@ async function commandExists(cmd: string): Promise<boolean> {
   }
 }
 
-/** List files in the session sandbox directory */
+/** List files in the session sandbox directory (excludes temp sandbox files) */
 export function listSandboxFiles(sessionId: string): string[] {
   const dir = getSandboxDir(sessionId);
   try {
-    return fs.readdirSync(dir);
+    return fs.readdirSync(dir).filter(f => !f.startsWith("__sandbox_"));
   } catch {
     return [];
   }
