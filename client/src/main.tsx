@@ -8,12 +8,15 @@ if (!window.location.hash || window.location.hash === "#") {
 }
 
 const root = document.getElementById("root");
+const boot = document.getElementById("boot-screen");
 if (root) {
   try {
+    if (boot) boot.style.display = "none";
     createRoot(root).render(<App />);
   } catch (err) {
-    root.innerHTML = `<div style="padding:2rem;color:#ef4444;font-family:monospace"><h2>Local Comet: render error</h2><pre>${String(err)}</pre></div>`;
+    if (boot) boot.style.display = "none";
+    root.innerHTML = `<div style="min-height:100vh;padding:2rem;background:#0b0d12;color:#ef4444;font-family:monospace"><h2>Local Comet: render error</h2><pre style="white-space:pre-wrap">${String(err)}</pre></div>`;
   }
 } else {
-  document.body.innerHTML = `<div style="padding:2rem;color:#ef4444;font-family:monospace">Missing #root element</div>`;
+  document.body.innerHTML = `<div style="min-height:100vh;padding:2rem;background:#0b0d12;color:#ef4444;font-family:monospace">Missing #root element</div>`;
 }

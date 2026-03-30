@@ -152,7 +152,7 @@ export async function registerRoutes(
       const settings = await storage.getSettings();
       res.json(settings || {
         providerType: "ollama",
-        baseUrl: "http://localhost",
+        baseUrl: "http://127.0.0.1",
         port: 11436,
         model: "",
         apiKey: "",
@@ -180,7 +180,7 @@ export async function registerRoutes(
       const { providerType, baseUrl, port, apiKey, model } = req.body;
       const result = await checkProvider({
         providerType: providerType || "ollama",
-        baseUrl: baseUrl || "http://localhost",
+        baseUrl: baseUrl || "http://127.0.0.1",
         port: port || 11436,
         model: model || "",
         apiKey: apiKey || "",
@@ -199,7 +199,7 @@ export async function registerRoutes(
       const { providerType, baseUrl, port, apiKey, model } = req.body;
       const models = await listModels({
         providerType: providerType || "ollama",
-        baseUrl: baseUrl || "http://localhost",
+        baseUrl: baseUrl || "http://127.0.0.1",
         port: port || 11436,
         model: model || "",
         apiKey: apiKey || "",
@@ -219,7 +219,7 @@ export async function registerRoutes(
       const response = await chat(
         {
           providerType: providerType || "ollama",
-          baseUrl: baseUrl || "http://localhost",
+          baseUrl: baseUrl || "http://127.0.0.1",
           port: port || 11436,
           model: model || "",
           apiKey: apiKey || "",

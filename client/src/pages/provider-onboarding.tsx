@@ -13,7 +13,12 @@ import {
   Cloud, ArrowLeft, Zap,
 } from "lucide-react";
 import type { ProviderType } from "@shared/schema";
-import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
+import {
+  isHostedPreview,
+  DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
+  EXAMPLE_LM_STUDIO_MODEL,
+} from "@/lib/hosting-env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,7 +102,7 @@ function ModeBanner() {
       <div className="space-y-0.5">
         <p className="text-xs text-emerald-300 font-semibold">Local mode — локальные модели доступны</p>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Ollama по умолчанию: <code className="font-mono bg-black/20 px-1 rounded">localhost:{DEFAULT_OLLAMA_PORT}</code>. Доступны также облачные API.
+          Ollama по умолчанию: <code className="font-mono bg-black/20 px-1 rounded">{DEFAULT_OLLAMA_BASE_URL}:{DEFAULT_OLLAMA_PORT}</code>. LM Studio: <code className="font-mono bg-black/20 px-1 rounded">{DEFAULT_LM_STUDIO_BASE_URL}:{DEFAULT_LM_STUDIO_PORT}</code>.
         </p>
       </div>
     </div>
@@ -169,16 +174,17 @@ function ConnectionBadge({ status }: { status: { ok: boolean; message: string } 
 interface LocalSetupProps {
   providerType: "ollama" | "lmstudio";
   label: string;
+  defaultBaseUrl: string;
   defaultPort: number;
   setupCmd: string;
   onBack: () => void;
   onSaved: () => void;
 }
 
-function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack, onSaved }: LocalSetupProps) {
+function LocalProviderSetup({ providerType, label, defaultBaseUrl, defaultPort, setupCmd, onBack, onSaved }: LocalSetupProps) {
   const { toast } = useToast();
   const [port, setPort] = useState(defaultPort);
-  const [baseUrl] = useState("http://localhost");
+  const [baseUrl] = useState(defaultBaseUrl);
   const [model, setModel] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [connStatus, setConnStatus] = useState<{ ok: boolean; message: string } | null | "checking">(null);
@@ -362,7 +368,8 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
                 data-testid="input-model-manual"
               />
               <p className="text-xs text-muted-foreground">
-                Модели не найдены автоматически — введите имя вручную (например: llama3.2, mistral).
+                Модели не найдены автоматически — введите имя вручную
+                {providerType === "lmstudio" ? ` (например: ${EXAMPLE_LM_STUDIO_MODEL})` : " (например: llama3.2, mistral)"}.
               </p>
             </div>
           )}
@@ -748,7 +755,7 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">Ollama</span>
-                      <span className="text-[10px] text-muted-foreground/60 font-mono">localhost:{DEFAULT_OLLAMA_PORT}</span>
+                      <span className="text-[10px] text-muted-foreground/60 font-mono">{DEFAULT_OLLAMA_BASE_URL}:{DEFAULT_OLLAMA_PORT}</span>
                     </div>
                     <p className="text-xs text-muted-foreground/60">Открытый движок, локальные модели</p>
                   </div>
@@ -761,7 +768,7 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">LM Studio</span>
-                      <span className="text-[10px] text-muted-foreground/60 font-mono">localhost:1234</span>
+                      <span className="text-[10px] text-muted-foreground/60 font-mono">{DEFAULT_LM_STUDIO_BASE_URL}:{DEFAULT_LM_STUDIO_PORT}</span>
                     </div>
                     <p className="text-xs text-muted-foreground/60">GUI + OpenAI-совместимый API</p>
                   </div>
@@ -792,7 +799,7 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
                 <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
                   Открытый движок для локальных моделей. Быстрый старт, работает без интернета.
                 </p>
-                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:{DEFAULT_OLLAMA_PORT}</p>
+                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">{DEFAULT_OLLAMA_BASE_URL}:{DEFAULT_OLLAMA_PORT}</p>
               </div>
               <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
             </button>
@@ -809,11 +816,12 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-base font-semibold">Подключить LM Studio</span>
+                  <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
                 </div>
                 <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
                   GUI-приложение с OpenAI-совместимым API. Удобно для скачивания и тестирования моделей.
                 </p>
-                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:1234</p>
+                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">{DEFAULT_LM_STUDIO_BASE_URL}:{DEFAULT_LM_STUDIO_PORT}</p>
               </div>
               <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
             </button>
@@ -883,6 +891,7 @@ export default function ProviderOnboarding({ onComplete }: ProviderOnboardingPro
           <LocalProviderSetup
             providerType="ollama"
             label="Ollama"
+            defaultBaseUrl={DEFAULT_OLLAMA_BASE_URL}
             defaultPort={DEFAULT_OLLAMA_PORT}
             setupCmd="ollama serve"
             onBack={() => setStep("choose")}
@@ -893,7 +902,8 @@ export default function ProviderOnboarding({ onComplete }: ProviderOnboardingPro
           <LocalProviderSetup
             providerType="lmstudio"
             label="LM Studio"
-            defaultPort={1234}
+            defaultBaseUrl={DEFAULT_LM_STUDIO_BASE_URL}
+            defaultPort={DEFAULT_LM_STUDIO_PORT}
             setupCmd="LM Studio → Developer tab → Start Server"
             onBack={() => setStep("choose")}
             onSaved={onComplete}

@@ -38,7 +38,12 @@ import { Link } from "wouter";
 import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
-import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
+import {
+  isHostedPreview,
+  DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
+  EXAMPLE_LM_STUDIO_MODEL,
+} from "@/lib/hosting-env";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -387,8 +392,8 @@ function MissionCard({ mission, onClear }: { mission: ActiveMission; onClear: ()
 
 // ─── Provider config for sidecar ─────────────────────────────────────────────
 const SIDECAR_PROVIDERS = [
-  { id: "ollama",           label: "Ollama",           local: true,  defaultBaseUrl: "http://localhost", defaultPort: DEFAULT_OLLAMA_PORT, hasPort: true,  hasApiKey: false, modelPlaceholder: "llama3.2, mistral…" },
-  { id: "lmstudio",         label: "LM Studio",        local: true,  defaultBaseUrl: "http://localhost", defaultPort: 1234,  hasPort: true,  hasApiKey: false, modelPlaceholder: "local-model" },
+  { id: "ollama",           label: "Ollama",           local: true,  defaultBaseUrl: DEFAULT_OLLAMA_BASE_URL, defaultPort: DEFAULT_OLLAMA_PORT, hasPort: true,  hasApiKey: false, modelPlaceholder: "llama3.2, mistral…" },
+  { id: "lmstudio",         label: "LM Studio",        local: true,  defaultBaseUrl: DEFAULT_LM_STUDIO_BASE_URL, defaultPort: DEFAULT_LM_STUDIO_PORT, hasPort: true,  hasApiKey: false, modelPlaceholder: EXAMPLE_LM_STUDIO_MODEL },
   { id: "openai_compatible",label: "OpenAI Compatible", local: false, defaultBaseUrl: "http://localhost", defaultPort: 8080,  hasPort: true,  hasApiKey: true,  modelPlaceholder: "gpt-3.5-turbo, custom…" },
   { id: "openai",           label: "OpenAI",           local: false, defaultBaseUrl: "https://api.openai.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "gpt-4o, gpt-4-turbo…" },
   { id: "anthropic",        label: "Anthropic",        local: false, defaultBaseUrl: "https://api.anthropic.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "claude-3-5-sonnet…" },
@@ -401,7 +406,7 @@ function ModelSettingsCollapsible() {
   const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
   const [form, setForm] = useState({
     providerType: "ollama" as string,
-    baseUrl: "http://localhost",
+    baseUrl: DEFAULT_OLLAMA_BASE_URL,
     port: DEFAULT_OLLAMA_PORT,
     model: "",
     apiKey: "",
@@ -421,7 +426,7 @@ function ModelSettingsCollapsible() {
       const d = settingsQuery.data;
       setForm({
         providerType: d.providerType || "ollama",
-        baseUrl: d.baseUrl || "http://localhost",
+        baseUrl: d.baseUrl || DEFAULT_OLLAMA_BASE_URL,
         port: d.port || DEFAULT_OLLAMA_PORT,
         model: d.model || "",
         apiKey: d.apiKey || "",
@@ -1028,7 +1033,7 @@ function ProviderConnectBlock() {
     setProvStatus(prev => ({ ...prev, checking: true }));
     apiRequest("POST", "/api/providers/check", {
       providerType: s.providerType || "ollama",
-      baseUrl: s.baseUrl || "http://localhost",
+      baseUrl: s.baseUrl || DEFAULT_OLLAMA_BASE_URL,
       port: s.port || DEFAULT_OLLAMA_PORT,
       apiKey: s.apiKey || "",
       model: s.model || "",
@@ -1121,8 +1126,8 @@ function ProviderConnectBlock() {
             )}
             <div className="grid grid-cols-3 gap-2">
               {[
-                { label: "Ollama", hint: "localhost:" + DEFAULT_OLLAMA_PORT, local: true },
-                { label: "LM Studio", hint: "localhost:1234", local: true },
+                { label: "Ollama", hint: `${DEFAULT_OLLAMA_BASE_URL}:${DEFAULT_OLLAMA_PORT}`, local: true },
+                { label: "LM Studio", hint: `${DEFAULT_LM_STUDIO_BASE_URL}:${DEFAULT_LM_STUDIO_PORT}`, local: true },
                 { label: "API Key", hint: "OpenAI / Claude / Gemini", local: false },
               ].map(opt => (
                 <Link key={opt.label} href="/settings">
@@ -1252,7 +1257,7 @@ export default function ControlCenter() {
     // Skip auto-check for local providers in hosted preview
     if (LOCAL_PROVIDERS.includes(s.providerType) && isHostedPreview()) return;
     setProviderStatus(prev => ({ ...prev, checking: true }));
-    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || DEFAULT_OLLAMA_PORT, apiKey: s.apiKey || "", model: s.model || "" })
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || DEFAULT_OLLAMA_BASE_URL, port: s.port || DEFAULT_OLLAMA_PORT, apiKey: s.apiKey || "", model: s.model || "" })
       .then(r => r.json())
       .then(d => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }))
       .catch(() => setProviderStatus({ ok: false, checked: true, checking: false }));
@@ -1262,7 +1267,7 @@ export default function ControlCenter() {
   const checkMutation = useMutation({
     mutationFn: async () => {
       const s = settingsQuery.data;
-      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || DEFAULT_OLLAMA_PORT, apiKey: s?.apiKey || "", model: s?.model || "" });
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || DEFAULT_OLLAMA_BASE_URL, port: s?.port || DEFAULT_OLLAMA_PORT, apiKey: s?.apiKey || "", model: s?.model || "" });
       return res.json();
     },
     onSuccess: (d) => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }),

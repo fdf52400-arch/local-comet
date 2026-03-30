@@ -17,7 +17,12 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, type ProviderType } from "@shared/schema";
-import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
+import {
+  isHostedPreview,
+  DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
+  EXAMPLE_LM_STUDIO_MODEL,
+} from "@/lib/hosting-env";
 
 // ─── Provider definitions ─────────────────────────────────────────────────────
 
@@ -45,7 +50,7 @@ const PROVIDER_DEFS: ProviderDef[] = [
     label: "Ollama",
     icon: Server,
     description: "Открытый источник, быстрый старт, работает локально",
-    defaultBaseUrl: "http://localhost",
+    defaultBaseUrl: DEFAULT_OLLAMA_BASE_URL,
     defaultPort: DEFAULT_OLLAMA_PORT,
     hasPort: true,
     hasApiKey: false,
@@ -60,12 +65,12 @@ const PROVIDER_DEFS: ProviderDef[] = [
     label: "LM Studio",
     icon: Terminal,
     description: "GUI + OpenAI-совместимый API, работает локально",
-    defaultBaseUrl: "http://localhost",
-    defaultPort: 1234,
+    defaultBaseUrl: DEFAULT_LM_STUDIO_BASE_URL,
+    defaultPort: DEFAULT_LM_STUDIO_PORT,
     hasPort: true,
     hasApiKey: false,
     hasBaseUrl: true,
-    modelPlaceholder: "local-model",
+    modelPlaceholder: EXAMPLE_LM_STUDIO_MODEL,
     category: "local",
     setupCmd: "LM Studio → Developer tab → Start Server",
     supportsModelList: true,
@@ -264,7 +269,7 @@ export default function SettingsPage() {
 
   const [form, setForm] = useState({
     providerType: "ollama" as ProviderType,
-    baseUrl: "http://localhost",
+    baseUrl: DEFAULT_OLLAMA_BASE_URL,
     port: DEFAULT_OLLAMA_PORT,
     model: "",
     apiKey: "",
@@ -287,7 +292,7 @@ export default function SettingsPage() {
       const d = settingsQuery.data;
       setForm({
         providerType: d.providerType || "ollama",
-        baseUrl: d.baseUrl || "http://localhost",
+        baseUrl: d.baseUrl || DEFAULT_OLLAMA_BASE_URL,
         port: d.port || DEFAULT_OLLAMA_PORT,
         model: d.model || "",
         apiKey: d.apiKey || "",
@@ -303,7 +308,7 @@ export default function SettingsPage() {
           try {
             const res = await apiRequest("POST", "/api/providers/check", {
               providerType: d.providerType || "ollama",
-              baseUrl: d.baseUrl || "http://localhost",
+              baseUrl: d.baseUrl || DEFAULT_OLLAMA_BASE_URL,
               port: d.port || DEFAULT_OLLAMA_PORT,
               apiKey: "",
             });
@@ -313,7 +318,7 @@ export default function SettingsPage() {
             if (result.ok) {
               const mRes = await apiRequest("POST", "/api/providers/models", {
                 providerType: d.providerType || "ollama",
-                baseUrl: d.baseUrl || "http://localhost",
+                baseUrl: d.baseUrl || DEFAULT_OLLAMA_BASE_URL,
                 port: d.port || DEFAULT_OLLAMA_PORT,
                 apiKey: "",
               });

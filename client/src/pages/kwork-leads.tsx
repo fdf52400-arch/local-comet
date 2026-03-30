@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import type { KworkLead } from "@shared/schema";
-import { DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
+import { DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL } from "@/lib/hosting-env";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -923,7 +923,7 @@ export default function KworkLeadsPage() {
   useEffect(() => {
     if (!settingsQuery.data) return;
     const s = settingsQuery.data;
-    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || DEFAULT_OLLAMA_PORT })
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || DEFAULT_OLLAMA_BASE_URL, port: s.port || DEFAULT_OLLAMA_PORT })
       .then(r => r.json())
       .then(d => { setProviderOk(!!d.ok); setProviderChecked(true); })
       .catch(() => { setProviderOk(false); setProviderChecked(true); });

@@ -52,7 +52,7 @@ export const providerSettings = sqliteTable("provider_settings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerType: text("provider_type").notNull().default("ollama"),
   // ollama | lmstudio | openai_compatible | anthropic | openai | gemini
-  baseUrl: text("base_url").notNull().default("http://localhost"),
+  baseUrl: text("base_url").notNull().default("http://127.0.0.1"),
   port: integer("port").notNull().default(11436), // default for local Ollama instance
   model: text("model").notNull().default(""),
   apiKey: text("api_key").notNull().default(""), // for cloud/external providers

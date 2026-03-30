@@ -24,7 +24,7 @@ function migrate() {
     CREATE TABLE IF NOT EXISTS provider_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_type TEXT NOT NULL DEFAULT 'ollama',
-      base_url TEXT NOT NULL DEFAULT 'http://localhost',
+      base_url TEXT NOT NULL DEFAULT 'http://127.0.0.1',
       port INTEGER NOT NULL DEFAULT 11436,
       model TEXT NOT NULL DEFAULT '',
       api_key TEXT NOT NULL DEFAULT '',

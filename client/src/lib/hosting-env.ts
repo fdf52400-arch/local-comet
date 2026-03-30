@@ -70,7 +70,22 @@ export function localProviderHostedNote(): string {
 }
 
 /**
- * Default Ollama port for local mode.
+ * Default Ollama endpoint for local mode.
  * Using 11436 (non-standard) to avoid conflicts with system-wide Ollama installation.
+ * Using 127.0.0.1 explicitly (loopback) for predictable routing.
  */
 export const DEFAULT_OLLAMA_PORT = 11436;
+export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1";
+
+/**
+ * Default LM Studio endpoint for local mode.
+ * LM Studio server runs on the local network at the configured IP.
+ * Port 1234 is LM Studio's default.
+ */
+export const DEFAULT_LM_STUDIO_PORT = 1234;
+export const DEFAULT_LM_STUDIO_BASE_URL = "http://192.168.31.168";
+
+/**
+ * Example LM Studio model name (used as placeholder in UI, not auto-selected).
+ */
+export const EXAMPLE_LM_STUDIO_MODEL = "google/gemma-3n-e4b";
