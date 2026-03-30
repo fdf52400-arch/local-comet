@@ -1,8 +1,8 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode, useState } from "react";
 import { Switch, Route, Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme";
@@ -10,6 +10,7 @@ import ControlCenter from "@/pages/control-center";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 import KworkLeadsPage from "@/pages/kwork-leads";
+import ProviderOnboarding from "@/pages/provider-onboarding";
 
 // Error boundary to prevent blank screen
 class ErrorBoundary extends Component<
@@ -43,6 +44,55 @@ class ErrorBoundary extends Component<
   }
 }
 
+// ─── Onboarding gate ─────────────────────────────────────────────────────────
+//
+// Determines whether we should show the onboarding screen or the main app.
+// Logic: show onboarding if settings are not loaded yet (first load) OR if
+// the settings have no model configured (empty model field).
+// Once the user completes onboarding (saves config), we flip `configured` to
+// true and show the main app.
+
+function isConfigured(settings: any): boolean {
+  if (!settings) return false;
+  // A config is considered "done" when a model name is saved
+  return !!(settings.model && settings.model.trim().length > 0);
+}
+
+function AppGate() {
+  const [forceConfigured, setForceConfigured] = useState(false);
+
+  const settingsQuery = useQuery<any>({
+    queryKey: ["/api/settings"],
+    // Re-check every 30 seconds in case something changes externally
+    staleTime: 30_000,
+  });
+
+  // While loading, render nothing (avoids flash)
+  if (settingsQuery.isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="h-6 w-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  const configured = forceConfigured || isConfigured(settingsQuery.data);
+
+  if (!configured) {
+    return (
+      <ProviderOnboarding
+        onComplete={() => setForceConfigured(true)}
+      />
+    );
+  }
+
+  return (
+    <Router hook={useHashLocation}>
+      <AppRouter />
+    </Router>
+  );
+}
+
 function AppRouter() {
   return (
     <Switch>
@@ -61,9 +111,7 @@ function App() {
         <ThemeProvider>
           <TooltipProvider>
             <Toaster />
-            <Router hook={useHashLocation}>
-              <AppRouter />
-            </Router>
+            <AppGate />
           </TooltipProvider>
         </ThemeProvider>
       </QueryClientProvider>

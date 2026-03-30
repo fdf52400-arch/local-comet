@@ -1650,6 +1650,72 @@ export default function ControlCenter() {
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════════════════
+          PROVIDER CONNECTION STATUS BANNER
+          Visible always — prominent when not connected, compact when OK.
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      {providerStatus.checked && (
+        <div
+          className={`shrink-0 flex items-center gap-2 px-3 py-1.5 text-xs border-b transition-colors ${
+            providerStatus.ok
+              ? "bg-emerald-500/5 border-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              : "bg-amber-500/8 border-amber-500/20 text-amber-600 dark:text-amber-400"
+          }`}
+          data-testid="provider-status-banner"
+        >
+          {providerStatus.ok ? (
+            <>
+              <CheckCircle2 className="h-3 w-3 shrink-0" />
+              <span className="font-medium">
+                {settingsQuery.data?.providerType
+                  ? settingsQuery.data.providerType === "ollama" ? "Ollama"
+                  : settingsQuery.data.providerType === "lmstudio" ? "LM Studio"
+                  : settingsQuery.data.providerType
+                  : "Провайдер"} подключён
+              </span>
+              {settingsQuery.data?.model && (
+                <span className="font-mono text-[10px] text-muted-foreground ml-1">
+                  · {settingsQuery.data.model}
+                </span>
+              )}
+              <Link href="/settings" className="ml-auto text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2" data-testid="link-change-provider">
+                Изменить
+              </Link>
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              <span className="font-medium">Провайдер недоступен — деградированный режим</span>
+              {settingsQuery.data?.model && (
+                <span className="text-[10px] text-muted-foreground/70">
+                  (настроен: {settingsQuery.data.model})
+                </span>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={() => checkMutation.mutate()}
+                  disabled={checkMutation.isPending}
+                  className="text-[10px] text-amber-500 hover:text-amber-400 transition-colors underline underline-offset-2 disabled:opacity-50"
+                  data-testid="button-recheck-provider"
+                >
+                  {checkMutation.isPending ? "Проверка…" : "Повторить"}
+                </button>
+                <Link href="/settings" className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2" data-testid="link-open-provider-settings">
+                  Настройки
+                </Link>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {/* Checking state — minimal pulse */}
+      {providerStatus.checking && !providerStatus.checked && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 text-xs border-b border-border bg-card/20" data-testid="provider-status-checking">
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/50" />
+          <span className="text-muted-foreground/60">Проверка подключения…</span>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
           COMMAND BAR — the single main input (Computer-first)
           ═══════════════════════════════════════════════════════════════════════════ */}
       <div className="min-h-[48px] border-b border-border flex items-center gap-2 px-3 py-1.5 shrink-0 bg-card/30" data-testid="command-bar">
