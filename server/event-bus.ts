@@ -48,7 +48,7 @@ export function addClient(res: Response): void {
 
 export function broadcast(event: AgentEvent): void {
   const data = JSON.stringify(event);
-  for (const client of clients) {
+  for (const client of Array.from(clients)) {
     try {
       client.write(`data: ${data}\n\n`);
     } catch {

@@ -27,11 +27,17 @@ function migrate() {
       base_url TEXT NOT NULL DEFAULT 'http://localhost',
       port INTEGER NOT NULL DEFAULT 11434,
       model TEXT NOT NULL DEFAULT '',
+      api_key TEXT NOT NULL DEFAULT '',
       temperature TEXT NOT NULL DEFAULT '0.7',
       max_tokens INTEGER NOT NULL DEFAULT 2048,
       safety_mode TEXT NOT NULL DEFAULT 'readonly'
     )
   `);
+
+  // Add api_key column to provider_settings if missing (migration for existing DBs)
+  try {
+    sqlite.exec(`ALTER TABLE provider_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`);
+  } catch { /* column already exists */ }
 
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS agent_tasks (

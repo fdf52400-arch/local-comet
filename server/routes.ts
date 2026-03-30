@@ -154,6 +154,7 @@ export async function registerRoutes(
         baseUrl: "http://localhost",
         port: 11434,
         model: "",
+        apiKey: "",
         temperature: "0.7",
         maxTokens: 2048,
         safetyMode: "readonly",

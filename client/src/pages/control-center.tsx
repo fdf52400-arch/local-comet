@@ -37,6 +37,7 @@ import { useTheme } from "@/lib/theme";
 import { Link } from "wouter";
 import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
+import { LOCAL_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -383,39 +384,63 @@ function MissionCard({ mission, onClear }: { mission: ActiveMission; onClear: ()
   );
 }
 
+// ─── Provider config for sidecar ─────────────────────────────────────────────
+const SIDECAR_PROVIDERS = [
+  { id: "ollama",           label: "Ollama",           local: true,  defaultBaseUrl: "http://localhost", defaultPort: 11434, hasPort: true,  hasApiKey: false, modelPlaceholder: "llama3.2, mistral…" },
+  { id: "lmstudio",         label: "LM Studio",        local: true,  defaultBaseUrl: "http://localhost", defaultPort: 1234,  hasPort: true,  hasApiKey: false, modelPlaceholder: "local-model" },
+  { id: "openai_compatible",label: "OpenAI Compatible", local: false, defaultBaseUrl: "http://localhost", defaultPort: 8080,  hasPort: true,  hasApiKey: true,  modelPlaceholder: "gpt-3.5-turbo, custom…" },
+  { id: "openai",           label: "OpenAI",           local: false, defaultBaseUrl: "https://api.openai.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "gpt-4o, gpt-4-turbo…" },
+  { id: "anthropic",        label: "Anthropic",        local: false, defaultBaseUrl: "https://api.anthropic.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "claude-3-5-sonnet…" },
+  { id: "gemini",           label: "Gemini",           local: false, defaultBaseUrl: "https://generativelanguage.googleapis.com", defaultPort: null, hasPort: false, hasApiKey: true, modelPlaceholder: "gemini-1.5-pro…" },
+] as const;
+
 /** Collapsible Model Settings (compact) */
 function ModelSettingsCollapsible() {
   const { toast } = useToast();
   const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
   const [form, setForm] = useState({
-    providerType: "ollama",
+    providerType: "ollama" as string,
     baseUrl: "http://localhost",
     port: 11434,
     model: "",
+    apiKey: "",
     temperature: "0.7",
     maxTokens: 2048,
     safetyMode: "readonly",
   });
   const [models, setModels] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  const currentProvDef = SIDECAR_PROVIDERS.find(p => p.id === form.providerType) ?? SIDECAR_PROVIDERS[0];
+  const isLocal = currentProvDef.local;
 
   useEffect(() => {
     if (settingsQuery.data && settingsQuery.data.providerType) {
+      const d = settingsQuery.data;
       setForm({
-        providerType: settingsQuery.data.providerType || "ollama",
-        baseUrl: settingsQuery.data.baseUrl || "http://localhost",
-        port: settingsQuery.data.port || 11434,
-        model: settingsQuery.data.model || "",
-        temperature: settingsQuery.data.temperature || "0.7",
-        maxTokens: settingsQuery.data.maxTokens || 2048,
-        safetyMode: settingsQuery.data.safetyMode || "readonly",
+        providerType: d.providerType || "ollama",
+        baseUrl: d.baseUrl || "http://localhost",
+        port: d.port || 11434,
+        model: d.model || "",
+        apiKey: d.apiKey || "",
+        temperature: d.temperature || "0.7",
+        maxTokens: d.maxTokens || 2048,
+        safetyMode: d.safetyMode || "readonly",
       });
     }
   }, [settingsQuery.data]);
 
+  // Auto-set defaults when provider changes
   useEffect(() => {
-    if (form.providerType === "ollama" && form.port === 1234) setForm(f => ({ ...f, port: 11434 }));
-    else if (form.providerType === "lmstudio" && form.port === 11434) setForm(f => ({ ...f, port: 1234 }));
+    const def = SIDECAR_PROVIDERS.find(p => p.id === form.providerType);
+    if (!def) return;
+    setForm(f => ({
+      ...f,
+      baseUrl: def.defaultBaseUrl,
+      port: def.defaultPort ?? f.port,
+    }));
+    setModels([]);
   }, [form.providerType]);
 
   const checkMutation = useMutation({
@@ -449,69 +474,137 @@ function ModelSettingsCollapsible() {
 
   return (
     <div className="border-t border-border/50" data-testid="model-connection-block">
+      {/* Header row — always visible */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent/20 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-accent/20 transition-colors"
         data-testid="button-toggle-model-settings"
       >
-        <Server className="h-3 w-3 text-muted-foreground" />
-        <span className="text-[11px] text-muted-foreground flex-1 text-left">Настройки модели</span>
-        <div className="flex items-center gap-1">
-          {checkMutation.data?.ok && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
-          {form.model && (
-            <Badge variant="outline" className="text-[9px] px-1 py-0 font-mono text-primary">
-              {form.model}
-            </Badge>
+        <Server className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <div className="flex-1 flex items-center gap-2 min-w-0">
+          <span className="text-xs text-foreground/80 font-medium">Подключение модели</span>
+          {/* Status indicator */}
+          {checkMutation.data?.ok ? (
+            <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+              Подключено
+            </span>
+          ) : form.model ? (
+            <span className="text-[10px] text-muted-foreground/60 font-mono truncate">{currentProvDef.label} · {form.model}</span>
+          ) : (
+            <span className="text-[10px] text-amber-400/70">не настроено</span>
           )}
         </div>
-        {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
+        {/* Quick link to full settings */}
+        <Link href="/settings">
+          <span
+            className="text-[10px] text-primary hover:text-primary/80 transition-colors px-1.5 py-0.5 rounded hover:bg-primary/10 mr-1"
+            onClick={e => e.stopPropagation()}
+            data-testid="link-full-settings"
+          >
+            Полные настройки
+          </span>
+        </Link>
+        {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground shrink-0" /> : <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />}
       </button>
       
       {expanded && (
-        <div className="px-3 pb-3 space-y-2 border-t border-border/30 pt-2">
-          {/* Provider toggle */}
-          <div className="flex gap-1 p-0.5 bg-muted/30 rounded-md">
-            <button
-              onClick={() => setForm(f => ({ ...f, providerType: "ollama" }))}
-              className={`flex-1 py-1 px-2 rounded text-[11px] font-medium transition-all ${form.providerType === "ollama" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-              data-testid="button-provider-ollama"
-            >
-              Ollama
-            </button>
-            <button
-              onClick={() => setForm(f => ({ ...f, providerType: "lmstudio" }))}
-              className={`flex-1 py-1 px-2 rounded text-[11px] font-medium transition-all ${form.providerType === "lmstudio" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-              data-testid="button-provider-lmstudio"
-            >
-              LM Studio
-            </button>
+        <div className="px-3 pb-3 space-y-2.5 border-t border-border/30 pt-2.5">
+
+          {/* Provider selection — 2-row grid */}
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1.5 block">Провайдер</label>
+            {/* Local providers */}
+            <div className="flex gap-1 p-0.5 bg-muted/30 rounded-md mb-1">
+              {SIDECAR_PROVIDERS.filter(p => p.local).map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setForm(f => ({ ...f, providerType: p.id }))}
+                  className={`flex-1 py-1 px-2 rounded text-[11px] font-medium transition-all ${form.providerType === p.id ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                  data-testid={`button-provider-${p.id}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {/* Cloud providers */}
+            <div className="flex gap-1 p-0.5 bg-muted/20 rounded-md">
+              {SIDECAR_PROVIDERS.filter(p => !p.local).map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setForm(f => ({ ...f, providerType: p.id }))}
+                  className={`flex-1 py-1 px-1 rounded text-[10px] font-medium transition-all ${form.providerType === p.id ? "bg-blue-600/80 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                  data-testid={`button-provider-${p.id}`}
+                  title={p.label}
+                >
+                  {p.label.split(" ")[0]}
+                </button>
+              ))}
+            </div>
+            {/* Config-only notice */}
+            {!isLocal && (
+              <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-blue-400/80 bg-blue-500/8 border border-blue-500/20 rounded px-2 py-1.5">
+                <span className="shrink-0">ℹ</span>
+                <span>Конфигурация сохраняется. Агент пока работает только через Ollama / LM Studio.</span>
+              </div>
+            )}
           </div>
 
-          {/* Base URL + Port */}
-          <div className="flex gap-1.5">
-            <div className="flex-1">
-              <label className="text-[10px] text-muted-foreground mb-0.5 block">Base URL</label>
-              <Input
-                value={form.baseUrl}
-                onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
-                className="h-7 text-[11px] font-mono"
-                placeholder="http://localhost"
-                data-testid="input-base-url"
-              />
+          {/* Base URL + Port (for local + openai_compatible) */}
+          {currentProvDef.hasPort && (
+            <div className="flex gap-1.5">
+              <div className="flex-1">
+                <label className="text-[10px] text-muted-foreground mb-0.5 block">Base URL</label>
+                <Input
+                  value={form.baseUrl}
+                  onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
+                  className="h-7 text-[11px] font-mono"
+                  placeholder={currentProvDef.defaultBaseUrl}
+                  data-testid="input-base-url"
+                />
+              </div>
+              <div className="w-20">
+                <label className="text-[10px] text-muted-foreground mb-0.5 block">Порт</label>
+                <Input
+                  type="number"
+                  value={form.port}
+                  onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value) || (currentProvDef.defaultPort ?? 11434) }))}
+                  className="h-7 text-[11px] font-mono text-center"
+                  data-testid="input-port"
+                />
+              </div>
             </div>
-            <div className="w-20">
-              <label className="text-[10px] text-muted-foreground mb-0.5 block">Порт</label>
-              <Input
-                type="number"
-                value={form.port}
-                onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value) || 11434 }))}
-                className="h-7 text-[11px] font-mono text-center"
-                data-testid="input-port"
-              />
-            </div>
-          </div>
+          )}
 
-          {/* Model selection */}
+          {/* API Key */}
+          {currentProvDef.hasApiKey && (
+            <div>
+              <label className="text-[10px] text-muted-foreground mb-0.5 block">API Key</label>
+              <div className="relative">
+                <Input
+                  type={showApiKey ? "text" : "password"}
+                  value={form.apiKey}
+                  onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
+                  className="h-7 text-[11px] font-mono pr-7"
+                  placeholder="sk-… или введите ключ"
+                  data-testid="input-api-key"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(v => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showApiKey
+                    ? <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    : <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  }
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Model field */}
           <div>
             <label className="text-[10px] text-muted-foreground mb-0.5 block">Модель</label>
             {models.length > 0 ? (
@@ -528,7 +621,7 @@ function ModelSettingsCollapsible() {
                 value={form.model}
                 onChange={e => setForm(f => ({ ...f, model: e.target.value }))}
                 className="h-7 text-[11px] font-mono"
-                placeholder={form.providerType === "ollama" ? "llama3:latest" : "local-model"}
+                placeholder={currentProvDef.modelPlaceholder}
                 data-testid="input-model"
               />
             )}
@@ -551,22 +644,26 @@ function ModelSettingsCollapsible() {
 
           {/* Action buttons */}
           <div className="flex gap-1.5">
-            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending} data-testid="button-check-connection">
-              {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-              Проверить
-            </Button>
-            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending} data-testid="button-get-models">
-              {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-              Модели
-            </Button>
+            {isLocal && (
+              <>
+                <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending} data-testid="button-check-connection">
+                  {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                  Проверить
+                </Button>
+                <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending} data-testid="button-get-models">
+                  {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Модели
+                </Button>
+              </>
+            )}
             <Button size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-settings">
               {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
               Сохранить
             </Button>
           </div>
 
-          {/* Status message */}
-          {checkMutation.data && (
+          {/* Status message (local providers only) */}
+          {checkMutation.data && isLocal && (
             <div className={`text-[11px] flex items-center gap-1.5 px-2 py-1.5 rounded-md ${checkMutation.data.ok ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
               {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
               <span>{checkMutation.data.message}</span>
@@ -904,6 +1001,125 @@ function SandboxPanel({ sessionId }: { sessionId: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Provider Connect Block ──────────────────────────────────────────────────
+/** Prominent block shown on main screen to let user connect a model */
+function ProviderConnectBlock() {
+  const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
+  const [provStatus, setProvStatus] = useState<{ ok: boolean; checked: boolean; checking: boolean }>({ ok: false, checked: false, checking: false });
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    const s = settingsQuery.data;
+    // Only check for local providers
+    if (!LOCAL_PROVIDERS.includes(s.providerType)) return;
+    setProvStatus(prev => ({ ...prev, checking: true }));
+    apiRequest("POST", "/api/providers/check", {
+      providerType: s.providerType || "ollama",
+      baseUrl: s.baseUrl || "http://localhost",
+      port: s.port || 11434,
+    })
+      .then(r => r.json())
+      .then(d => setProvStatus({ ok: !!d.ok, checked: true, checking: false }))
+      .catch(() => setProvStatus({ ok: false, checked: true, checking: false }));
+  }, [settingsQuery.data]);
+
+  const settings = settingsQuery.data;
+  const providerLabel = settings?.providerType
+    ? SIDECAR_PROVIDERS.find(p => p.id === settings.providerType)?.label ?? settings.providerType
+    : null;
+  const model = settings?.model;
+  const isConfigOnly = settings?.providerType && !LOCAL_PROVIDERS.includes(settings.providerType);
+
+  return (
+    <div className="mb-5 rounded-xl border border-border/60 bg-card/50 overflow-hidden" data-testid="provider-connect-block">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
+        <div className="flex items-center gap-2">
+          <Server className="h-4 w-4 text-primary" />
+          <span className="text-sm font-semibold">Подключение модели</span>
+        </div>
+        <Link href="/settings">
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" data-testid="button-open-settings">
+            <Settings className="h-3 w-3" />
+            Настроить
+          </Button>
+        </Link>
+      </div>
+
+      {/* Status */}
+      <div className="px-4 py-3">
+        {settingsQuery.isLoading || provStatus.checking ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Проверка подключения…
+          </div>
+        ) : isConfigOnly ? (
+          <div className="flex items-center gap-2 text-xs text-blue-400/80">
+            <Info className="h-3.5 w-3.5 shrink-0" />
+            <div>
+              <span className="font-medium">{providerLabel}</span>{model ? <> · <code className="font-mono text-[11px]">{model}</code></> : null}
+              {" "}<span className="text-muted-foreground">— конфигурация сохранена. Агент работает только через Ollama / LM Studio.</span>
+            </div>
+          </div>
+        ) : !settings?.model ? (
+          <div className="flex items-center gap-2 text-xs text-amber-400/90">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>Модель не настроена. Откройте <Link href="/settings"><span className="underline cursor-pointer">Настройки</span></Link> и выберите провайдер.</span>
+          </div>
+        ) : provStatus.checked && provStatus.ok ? (
+          <div className="flex items-center gap-2 text-xs text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              <span className="font-medium">{providerLabel}</span>{" "}подключен
+              {model && <> · <code className="font-mono text-[11px] bg-emerald-500/10 px-1 rounded">{model}</code></>}
+            </span>
+          </div>
+        ) : provStatus.checked && !provStatus.ok ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-xs text-amber-400/90">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                <span className="font-medium">{providerLabel}</span> недоступен — деградированный режим.
+                {" "}Задачи будут выполняться без LLM.
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Server className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              {providerLabel
+                ? <><span className="font-medium">{providerLabel}</span>{model ? <> · <code className="font-mono text-[11px]">{model}</code></> : " · не проверено"}</>
+                : "Провайдер не выбран"}
+            </span>
+          </div>
+        )}
+
+        {/* Provider options hint when not configured */}
+        {!settings?.model && !settingsQuery.isLoading && (
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {[
+              { label: "Ollama", hint: "localhost:11434", local: true },
+              { label: "LM Studio", hint: "localhost:1234", local: true },
+              { label: "API Key", hint: "OpenAI / Claude / Gemini", local: false },
+            ].map(opt => (
+              <Link key={opt.label} href="/settings">
+                <div
+                  className="border border-border/50 hover:border-primary/40 hover:bg-primary/5 rounded-lg p-2 text-center transition-colors cursor-pointer"
+                  data-testid={`card-provider-hint-${opt.label.toLowerCase().replace(' ', '-')}`}
+                >
+                  <div className="text-xs font-semibold">{opt.label}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">{opt.hint}</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1591,6 +1807,9 @@ export default function ControlCenter() {
                   Пишите команды естественным языком. Computer выполнит.
                 </p>
 
+                {/* ── Provider Connection Block ── */}
+                <ProviderConnectBlock />
+
                 {/* Example Commands — main UX element */}
                 <div className="space-y-1.5 mb-6">
                   {EXAMPLE_COMMANDS.map((cmd, i) => (
@@ -1714,9 +1933,9 @@ export default function ControlCenter() {
                     <div className="px-3 py-2 border-b border-amber-500/20 bg-amber-500/5 flex items-start gap-2 shrink-0" data-testid="degraded-mode-banner">
                       <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
                       <div className="text-[10px] text-amber-400/90 leading-relaxed">
-                        <span className="font-semibold">Деградированный режим</span> — провайдер недоступен.
-                        { }Задачи будут выполняться без LLM по шаблонному плану.
-                        { }<Link href="/settings"><span className="underline cursor-pointer hover:text-amber-300">Настройки</span></Link>
+                        <span className="font-semibold">Деградированный режим</span>{" "}— провайдер недоступен.{" "}
+                        Задачи будут выполняться без LLM по шаблонному плану.{" "}
+                        <Link href="/settings"><span className="underline cursor-pointer hover:text-amber-300">Настройки провайдера</span></Link>
                       </div>
                     </div>
                   )}

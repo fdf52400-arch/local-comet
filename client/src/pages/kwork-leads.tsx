@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,9 @@ import {
   Mail,
   Hand,
   MonitorSmartphone,
+  ClipboardPaste,
+  MessageSquarePlus,
+  Copy,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import type { KworkLead } from "@shared/schema";
@@ -153,6 +156,40 @@ function IntakeForm({ onClose, onCreated }: IntakeFormProps) {
   });
   const [preview, setPreview] = useState<null | { fitScore: number; recommendation: string; whyFits: string[]; keyRisks: string[] }>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [parsePending, setParsePending] = useState(false);
+
+  const parseBrief = async () => {
+    if (!pasteText.trim()) return;
+    setParsePending(true);
+    try {
+      const res = await apiRequest("POST", "/api/kwork/parse-brief", { text: pasteText });
+      const data = await res.json();
+      if (data.error) { toast({ title: "Ошибка разбора", description: data.error, variant: "destructive" }); return; }
+      setForm(f => ({
+        ...f,
+        title: data.title || f.title,
+        budget: data.budget ? String(data.budget) : f.budget,
+        category: data.category || f.category,
+        brief: data.brief || f.brief,
+        orderUrl: data.orderUrl || f.orderUrl,
+        flagFitsProfile: data.flagFitsProfile ?? f.flagFitsProfile,
+        flagNeedsCall: data.flagNeedsCall ?? f.flagNeedsCall,
+        flagNeedsAccess: data.flagNeedsAccess ?? f.flagNeedsAccess,
+        flagNeedsDesign: data.flagNeedsDesign ?? f.flagNeedsDesign,
+        flagNeedsMobile: data.flagNeedsMobile ?? f.flagNeedsMobile,
+        flagCloudVmFit: data.flagCloudVmFit ?? f.flagCloudVmFit,
+        source: "manual",
+      }));
+      setPasteMode(false);
+      toast({ title: "Поля заполнены автоматически", description: "Проверьте и скорректируйте при необходимости" });
+    } catch (e: any) {
+      toast({ title: "Ошибка разбора", description: e.message, variant: "destructive" });
+    } finally {
+      setParsePending(false);
+    }
+  };
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -201,6 +238,59 @@ function IntakeForm({ onClose, onCreated }: IntakeFormProps) {
 
   return (
     <div className="space-y-4">
+      {/* Paste brief button */}
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setPasteMode(!pasteMode)}
+          className="gap-1.5 text-xs"
+          data-testid="button-paste-brief"
+        >
+          <ClipboardPaste className="h-3.5 w-3.5" />
+          Вставить брифинг
+        </Button>
+        <span className="text-[11px] text-muted-foreground">или заполните поля вручную ниже</span>
+      </div>
+
+      {/* Paste mode */}
+      {pasteMode && (
+        <div className="space-y-2 p-3 rounded-lg border border-primary/30 bg-primary/5">
+          <label className="text-xs font-medium text-muted-foreground block">Вставьте текст из Kwork / email-дайджеста</label>
+          <Textarea
+            data-testid="input-paste-brief"
+            placeholder="Вставьте текст проекта, описание из email, или скопированный brief..."
+            rows={6}
+            value={pasteText}
+            onChange={e => setPasteText(e.target.value)}
+            className="font-mono text-xs"
+          />
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={parseBrief}
+              disabled={parsePending || !pasteText.trim()}
+              className="gap-1.5 text-xs"
+              data-testid="button-parse-brief"
+            >
+              {parsePending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+              Разобрать автоматически
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => { setPasteMode(false); setPasteText(""); }}
+              className="text-xs"
+            >
+              Отмена
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3">
         <div className="col-span-2">
           <label className="text-xs font-medium text-muted-foreground mb-1 block">Название проекта *</label>
@@ -353,11 +443,39 @@ interface LeadCardProps {
   onUpdate: () => void;
 }
 
-function LeadCard({ lead, onUpdate }: LeadCardProps) {
+function LeadCard({ lead, onUpdate, providerOk }: LeadCardProps & { providerOk: boolean }) {
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [draftSource, setDraftSource] = useState<"model" | "template" | null>(null);
+  const [draftLoading, setDraftLoading] = useState(false);
   const whyFits = safeParseJson(lead.whyFits);
   const keyRisks = safeParseJson(lead.keyRisks);
+
+  const generateDraft = async () => {
+    setDraftLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/kwork/response-draft", { leadId: lead.id });
+      const data = await res.json();
+      if (data.error) { toast({ title: "Ошибка", description: data.error, variant: "destructive" }); return; }
+      setDraft(data.draft);
+      setDraftSource(data.source);
+    } catch (e: any) {
+      toast({ title: "Ошибка генерации", description: e.message, variant: "destructive" });
+    } finally {
+      setDraftLoading(false);
+    }
+  };
+
+  const copyDraft = async () => {
+    if (!draft) return;
+    try {
+      await navigator.clipboard.writeText(draft);
+      toast({ title: "Отклик скопирован" });
+    } catch {
+      toast({ title: "Не удалось скопировать", variant: "destructive" });
+    }
+  };
 
   const updateMutation = useMutation({
     mutationFn: async (updates: Partial<KworkLead>) => {
@@ -617,12 +735,20 @@ function LeadCard({ lead, onUpdate }: LeadCardProps) {
               data-testid={`button-computer-review-${lead.id}`}
               size="sm"
               variant="outline"
-              onClick={() => computerReviewMutation.mutate()}
+              onClick={() => {
+                if (!providerOk) {
+                  toast({ title: "Провайдер недоступен", description: "Computer review требует LLM. Запустите Ollama / LM Studio.", variant: "default" }); return;
+                }
+                computerReviewMutation.mutate();
+              }}
               disabled={computerReviewMutation.isPending || lead.status === "in_review"}
-              className="text-xs"
+              className={`text-xs ${!providerOk ? "opacity-60" : ""}`}
+              title={!providerOk ? "Провайдер недоступен" : undefined}
             >
               {computerReviewMutation.isPending
                 ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                : !providerOk
+                ? <AlertCircle className="w-3.5 h-3.5 mr-1 text-amber-500" />
                 : <Bot className="w-3.5 h-3.5 mr-1" />
               }
               {lead.status === "in_review" ? "Computer review..." : "Запустить Computer review"}
@@ -673,6 +799,66 @@ function LeadCard({ lead, onUpdate }: LeadCardProps) {
             </div>
           )}
 
+          {/* Response draft */}
+          <div className="border-t border-border/50 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-medium text-muted-foreground">Черновик отклика</div>
+                {!providerOk && (
+                  <span className="text-[10px] text-amber-500/80" data-testid={`draft-degraded-${lead.id}`}>— шаблон</span>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={generateDraft}
+                disabled={draftLoading}
+                className="text-xs gap-1.5 h-7"
+                data-testid={`button-draft-${lead.id}`}
+              >
+                {draftLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <MessageSquarePlus className="w-3 h-3" />}
+                {draft ? "Обновить" : "Сгенерировать"}
+              </Button>
+            </div>
+            {!providerOk && !draft && (
+              <div className="text-[10px] text-amber-500/70 mb-2 flex items-center gap-1.5">
+                <AlertCircle className="w-3 h-3 flex-none" />
+                Провайдер недоступен — черновик будет сгенерирован по статичному шаблону.
+              </div>
+            )}
+            {draft ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  {draftSource === "model" ? (
+                    <Badge variant="outline" className="text-[9px] text-purple-400 border-purple-500/30">LLM</Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[9px] text-amber-400/70 border-amber-500/20">Шаблон</Badge>
+                  )}
+                  <span className="text-[10px] text-muted-foreground">
+                    {draftSource === "model" ? "Сгенерирован моделью" : "Шаблонный отклик (LLM недоступен)"}
+                  </span>
+                </div>
+                <div className="bg-muted/20 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed text-foreground/80 max-h-48 overflow-auto">
+                  {draft}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={copyDraft}
+                  className="text-xs gap-1.5 h-7"
+                  data-testid={`button-copy-draft-${lead.id}`}
+                >
+                  <Copy className="w-3 h-3" />
+                  Скопировать
+                </Button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Нажмите «Сгенерировать» для черновика отклика.
+              </p>
+            )}
+          </div>
+
           {/* Computer task link */}
           {lead.computerTaskId && (
             <div className="text-xs text-muted-foreground">
@@ -705,7 +891,7 @@ function StatsBar({ leads }: { leads: KworkLead[] }) {
         { label: "Шортлист", value: shortlisted, color: "text-violet-500" },
       ].map(({ label, value, color }) => (
         <div key={label} className="rounded-lg border border-border bg-card p-2">
-          <div className={`text-xl font-bold ${color}`}>{value}</div>
+          <div className={`text-lg font-bold tabular-nums ${color}`}>{value}</div>
           <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
         </div>
       ))}
@@ -723,11 +909,24 @@ export default function KworkLeadsPage() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showIntake, setShowIntake] = useState(false);
+  const [providerOk, setProviderOk] = useState(false);
+  const [providerChecked, setProviderChecked] = useState(false);
 
   const { data: leads = [], isLoading, refetch } = useQuery<KworkLead[]>({
     queryKey: ["/api/kwork/leads"],
     refetchInterval: 30_000,
   });
+
+  // Silently check provider availability on mount
+  const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    const s = settingsQuery.data;
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || 11434 })
+      .then(r => r.json())
+      .then(d => { setProviderOk(!!d.ok); setProviderChecked(true); })
+      .catch(() => { setProviderOk(false); setProviderChecked(true); });
+  }, [settingsQuery.data]);
 
   const seedMutation = useMutation({
     mutationFn: async () => {
@@ -844,6 +1043,18 @@ export default function KworkLeadsPage() {
         {/* Stats */}
         {leads.length > 0 && <StatsBar leads={leads} />}
 
+        {/* Provider status banner */}
+        {providerChecked && !providerOk && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-500/90" data-testid="provider-offline-banner">
+            <AlertCircle className="w-3.5 h-3.5 flex-none" />
+            <span>
+              <span className="font-semibold">Деградированный режим</span> — провайдер LLM недоступен.
+              { }Computer review и генерация отклика будут работать в режиме шаблона.
+              { }<Link href="/settings"><span className="underline cursor-pointer">Настройки провайдера</span></Link>.
+            </span>
+          </div>
+        )}
+
         {/* Filters + Search */}
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="flex gap-1 flex-wrap">
@@ -902,7 +1113,7 @@ export default function KworkLeadsPage() {
         ) : (
           <div className="space-y-3">
             {sortedLeads.map(lead => (
-              <LeadCard key={lead.id} lead={lead} onUpdate={() => {}} />
+              <LeadCard key={lead.id} lead={lead} onUpdate={() => {}} providerOk={providerOk} />
             ))}
           </div>
         )}

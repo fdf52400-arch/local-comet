@@ -37,13 +37,23 @@ export type InsertSessionTab = z.infer<typeof insertSessionTabSchema>;
 export type SessionTab = typeof sessionTabs.$inferSelect;
 
 // ─── Provider settings ────────────────────────────────────────────────────────
+//
+// providerType values:
+//   ollama          — local Ollama server  (real connection + model list)
+//   lmstudio        — local LM Studio      (real connection + model list)
+//   openai_compatible — any OpenAI-compatible endpoint (config saved, no agent chat yet)
+//   anthropic       — Anthropic API        (config saved, no agent chat yet)
+//   openai          — OpenAI API           (config saved, no agent chat yet)
+//   gemini          — Google Gemini API    (config saved, no agent chat yet)
 
 export const providerSettings = sqliteTable("provider_settings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  providerType: text("provider_type").notNull().default("ollama"), // ollama | lmstudio
+  providerType: text("provider_type").notNull().default("ollama"),
+  // ollama | lmstudio | openai_compatible | anthropic | openai | gemini
   baseUrl: text("base_url").notNull().default("http://localhost"),
   port: integer("port").notNull().default(11434),
   model: text("model").notNull().default(""),
+  apiKey: text("api_key").notNull().default(""), // for cloud/external providers
   temperature: text("temperature").notNull().default("0.7"),
   maxTokens: integer("max_tokens").notNull().default(2048),
   safetyMode: text("safety_mode").notNull().default("readonly"), // readonly | confirm | full
@@ -52,6 +62,14 @@ export const providerSettings = sqliteTable("provider_settings", {
 export const insertProviderSettingsSchema = createInsertSchema(providerSettings).omit({ id: true });
 export type InsertProviderSettings = z.infer<typeof insertProviderSettingsSchema>;
 export type ProviderSettings = typeof providerSettings.$inferSelect;
+
+// Provider types that support real connection checks / model listing
+export const LOCAL_PROVIDERS = ["ollama", "lmstudio"] as const;
+// Provider types that only save config (no agent LLM execution yet)
+export const CONFIG_ONLY_PROVIDERS = ["openai_compatible", "anthropic", "openai", "gemini"] as const;
+export type LocalProviderType = typeof LOCAL_PROVIDERS[number];
+export type ConfigOnlyProviderType = typeof CONFIG_ONLY_PROVIDERS[number];
+export type ProviderType = LocalProviderType | ConfigOnlyProviderType;
 
 // ─── Agent tasks — now with workspaceId ───────────────────────────────────────
 
