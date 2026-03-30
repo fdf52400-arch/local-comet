@@ -62,6 +62,14 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(httpServer, app);
 
+  // Auto-seed Kwork demo data on first start
+  try {
+    const { storage } = await import("./storage");
+    await storage.seedKworkLeads();
+  } catch (e) {
+    console.error("Kwork seed error:", e);
+  }
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
@@ -89,7 +97,8 @@ app.use((req, res, next) => {
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
+  // Prefer LOCAL_COMET_PORT, then PORT, default 5051
+  const port = parseInt(process.env.LOCAL_COMET_PORT || process.env.PORT || "5051", 10);
   httpServer.listen(
     {
       port,

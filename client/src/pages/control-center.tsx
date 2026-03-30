@@ -1,155 +1,1311 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Play, Square, Settings, History, Zap, Globe, Bot,
+  Play, Settings, Zap, Globe, Bot,
   CheckCircle2, XCircle, AlertTriangle, Clock, Loader2,
-  ChevronRight, Rocket, Shield, ShieldAlert, ShieldCheck,
-  Sun, Moon, Link2, FileText,
+  Shield, ShieldAlert, ShieldCheck,
+  Sun, Moon, Eye, Brain, Cpu, 
+  ChevronDown, ChevronUp, ChevronRight, ChevronLeft,
+  Scan, Monitor, RefreshCw, Send,
+  Plus, X, RotateCcw, PlayCircle,
+  PauseCircle, StepForward, StepBack,
+  AlertOctagon, Info, Download, Search,
+  ArrowLeft, ArrowRight, Save, Sparkles,
+  MonitorSmartphone,
+  Server, PanelRightClose,
+  MoreHorizontal, Crosshair, Hash,
+  MessageSquare, BookOpen, TrendingUp,
+  CircleDot, Briefcase,
+  Command as CommandIcon,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { Link } from "wouter";
-import type { AgentTask, DemoScenario, AgentLog } from "@shared/schema";
+import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
+import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
 
-interface RunResult {
-  task: AgentTask;
-  plan: any[];
-  results: any[];
-  planSource: string;
-  logs: AgentLog[];
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface AgentEvent {
+  type: string;
+  taskId: number;
+  step?: number;
+  maxSteps?: number;
+  phase?: string;
+  detail: string;
+  data?: any;
+  timestamp: string;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; icon: any; color: string }> = {
-  pending: { label: "Ожидание", icon: Clock, color: "text-muted-foreground" },
-  planning: { label: "Планирование", icon: Loader2, color: "text-yellow-500" },
-  running: { label: "Выполнение", icon: Loader2, color: "text-primary" },
-  completed: { label: "Завершено", icon: CheckCircle2, color: "text-green-500" },
-  error: { label: "Ошибка", icon: XCircle, color: "text-red-500" },
-  success: { label: "Успех", icon: CheckCircle2, color: "text-green-500" },
-  warning: { label: "Внимание", icon: AlertTriangle, color: "text-yellow-500" },
-  blocked: { label: "Заблокировано", icon: Shield, color: "text-orange-400" },
-  info: { label: "Инфо", icon: Clock, color: "text-muted-foreground" },
-};
-
-const SAFETY_MODES: Record<string, { label: string; icon: any; desc: string }> = {
-  readonly: { label: "Только чтение", icon: ShieldCheck, desc: "Агент только читает страницы" },
-  confirm: { label: "С подтверждением", icon: ShieldAlert, desc: "Спрашивает перед действием" },
-  full: { label: "Полный доступ", icon: Shield, desc: "Все действия разрешены" },
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const config = STATUS_CONFIG[status] || STATUS_CONFIG.pending;
-  const Icon = config.icon;
-  const isSpinning = status === "planning" || status === "running";
-  return (
-    <Badge variant="outline" className={`${config.color} gap-1`}>
-      <Icon className={`h-3 w-3 ${isSpinning ? "animate-spin" : ""}`} />
-      {config.label}
-    </Badge>
-  );
+interface ConfirmRequest {
+  taskId: number;
+  sessionId: string;
+  step: number;
+  action: string;
+  params?: Record<string, string>;
+  detail: string;
+  riskLevel: "low" | "medium" | "high";
+  riskReason: string;
 }
 
-function LogEntry({ log }: { log: any }) {
-  const statusColors: Record<string, string> = {
-    success: "text-green-400",
-    error: "text-red-400",
-    warning: "text-yellow-400",
-    info: "text-muted-foreground",
+interface DOMElement {
+  tag: string;
+  type: string;
+  text: string;
+  href?: string;
+  placeholder?: string;
+  name?: string;
+  index: number;
+}
+
+interface PageSnapshot {
+  url: string;
+  title: string;
+  textSnippet: string;
+  elements: DOMElement[];
+  stats: {
+    links: number;
+    buttons: number;
+    inputs: number;
+    forms: number;
+    images: number;
+    headings: number;
   };
+  headings: string[];
+  metaDescription: string;
+}
+
+interface PreviewSync {
+  url: string;
+  syncId: number;
+  timestamp: string;
+  currentAction: string | null;
+  hasScreenshot: boolean;
+  snapshot: PageSnapshot | null;
+  sessionId?: string;
+}
+
+interface StepData {
+  id: number;
+  taskId: number;
+  sessionId: string;
+  stepIndex: number;
+  phase: string;
+  action: string;
+  status: string;
+  detail: string;
+  timestamp: string;
+  hasScreenshot: boolean;
+  snapshotJson: string | null;
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
+  queued: { label: "В очереди", color: "text-muted-foreground", bg: "bg-muted/30", icon: Clock },
+  running: { label: "Выполняется", color: "text-blue-400", bg: "bg-blue-500/10", icon: Loader2 },
+  waiting_confirm: { label: "Ожидает", color: "text-orange-400", bg: "bg-orange-500/10", icon: ShieldAlert },
+  completed: { label: "Завершена", color: "text-emerald-400", bg: "bg-emerald-500/10", icon: CheckCircle2 },
+  error: { label: "Ошибка", color: "text-red-400", bg: "bg-red-500/10", icon: XCircle },
+  cancelled: { label: "Отменена", color: "text-muted-foreground", bg: "bg-muted/20", icon: X },
+};
+
+const PHASE_CONFIG: Record<string, { label: string; icon: any; color: string; bg: string }> = {
+  idle: { label: "Ожидание", icon: Clock, color: "text-muted-foreground", bg: "bg-muted/30" },
+  navigate: { label: "Навигация", icon: Globe, color: "text-blue-400", bg: "bg-blue-500/10" },
+  observe: { label: "Сканирование", icon: Scan, color: "text-cyan-400", bg: "bg-cyan-500/10" },
+  reason: { label: "Анализ", icon: Brain, color: "text-purple-400", bg: "bg-purple-500/10" },
+  act: { label: "Действие", icon: Cpu, color: "text-amber-400", bg: "bg-amber-500/10" },
+  awaiting_confirmation: { label: "Подтверждение", icon: ShieldAlert, color: "text-orange-400", bg: "bg-orange-500/10" },
+  completed: { label: "Завершено", icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10" },
+  error: { label: "Ошибка", icon: XCircle, color: "text-red-400", bg: "bg-red-500/10" },
+};
+
+const EVENT_COLORS: Record<string, string> = {
+  planning: "text-purple-400",
+  observation: "text-cyan-400",
+  reasoning: "text-purple-400",
+  action: "text-amber-400",
+  action_result: "text-emerald-400",
+  confirm_request: "text-orange-400",
+  confirm_response: "text-blue-400",
+  warning: "text-yellow-400",
+  error: "text-red-400",
+  blocked: "text-orange-400",
+  completed: "text-emerald-400",
+  step_counter: "text-muted-foreground",
+  preview_update: "text-teal-400",
+  manual_action: "text-indigo-400",
+  queue_update: "text-cyan-400",
+  session_update: "text-blue-400",
+};
+
+const EVENT_ICONS: Record<string, string> = {
+  planning: "◈", observation: "◉", reasoning: "◆", action: "▶",
+  action_result: "✓", confirm_request: "⚡", confirm_response: "↩",
+  warning: "⚠", error: "✗", blocked: "⊘", completed: "★",
+  step_counter: "·", preview_update: "◎", manual_action: "⚙",
+  queue_update: "◈", session_update: "◎",
+};
+
+const RISK_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; icon: any }> = {
+  low: { label: "Низкий", color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30", icon: CheckCircle2 },
+  medium: { label: "Средний", color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", icon: AlertTriangle },
+  high: { label: "Высокий", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", icon: AlertOctagon },
+};
+
+const SAFETY_MODES: Record<string, { label: string; icon: any; desc: string; color: string }> = {
+  readonly: { label: "Только чтение", icon: ShieldCheck, desc: "Агент только читает страницы", color: "text-emerald-500" },
+  confirm: { label: "Подтверждение", icon: ShieldAlert, desc: "Спрашивает перед действием", color: "text-orange-400" },
+  full: { label: "Полный доступ", icon: Shield, desc: "Все действия разрешены", color: "text-red-400" },
+};
+
+type SidecarMode = "computer" | "chat" | "research" | "terminal" | "sandbox";
+
+// ─── Mission: the active Computer task with plan steps ───────────────────────
+
+interface MissionStep {
+  index: number;
+  action: string;
+  description: string;
+  status: "pending" | "running" | "success" | "error" | "skipped";
+}
+
+interface ActiveMission {
+  userRequest: string;
+  resolvedUrl: string;
+  goal: string;
+  queryType: string;
+  planSource: string;
+  taskId: number;
+  steps: MissionStep[];
+  overallStatus: "running" | "completed" | "error";
+  result?: string;
+  startedAt: string;
+}
+
+// ─── Sub-Components ──────────────────────────────────────────────────────────
+
+/** Risk Card for Confirm Flow */
+function RiskCard({ confirmReq, onConfirm, onDeny, isPending }: {
+  confirmReq: ConfirmRequest;
+  onConfirm: () => void;
+  onDeny: () => void;
+  isPending: boolean;
+}) {
+  const riskCfg = RISK_CONFIG[confirmReq.riskLevel] || RISK_CONFIG.low;
+  const RiskIcon = riskCfg.icon;
   return (
-    <div className="log-line flex gap-2 py-1 border-b border-border/50">
-      <span className="text-muted-foreground/60 shrink-0 w-5 text-right">{log.stepIndex || "—"}</span>
-      <span className={`shrink-0 ${statusColors[log.status] || "text-muted-foreground"}`}>
-        {log.status === "success" ? "✓" : log.status === "error" ? "✗" : log.status === "warning" ? "⚠" : "·"}
-      </span>
-      <span className="text-muted-foreground/70 shrink-0">[{log.action}]</span>
-      <span className="break-all">{log.detail}</span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" data-testid="risk-card-overlay">
+      <div className={`w-[420px] rounded-xl border-2 ${riskCfg.border} bg-card shadow-2xl overflow-hidden`} data-testid="risk-card">
+        <div className={`px-4 py-3 ${riskCfg.bg} flex items-center gap-3`}>
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${riskCfg.bg} border ${riskCfg.border}`}>
+            <RiskIcon className={`h-5 w-5 ${riskCfg.color}`} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold">Подтверждение действия</span>
+              <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${riskCfg.color} ${riskCfg.border}`}>
+                Риск: {riskCfg.label}
+              </Badge>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">
+              Задача #{confirmReq.taskId}
+            </div>
+          </div>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="text-sm font-medium">{confirmReq.detail}</div>
+          <div className={`flex items-start gap-2 p-2.5 rounded-lg ${riskCfg.bg} border ${riskCfg.border}`}>
+            <Info className={`h-4 w-4 shrink-0 mt-0.5 ${riskCfg.color}`} />
+            <div>
+              <div className={`text-[11px] font-bold ${riskCfg.color}`}>Оценка риска</div>
+              <div className="text-[11px] text-foreground/70 mt-0.5">{confirmReq.riskReason}</div>
+            </div>
+          </div>
+          {confirmReq.params && Object.keys(confirmReq.params).length > 0 && (
+            <div className="bg-muted/30 rounded-lg p-2.5 space-y-1">
+              <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Параметры</div>
+              <div className="text-[11px] font-mono"><span className="text-muted-foreground">Действие:</span> {confirmReq.action}</div>
+              {Object.entries(confirmReq.params).map(([k, v]) => (
+                <div key={k} className="text-[11px] font-mono"><span className="text-muted-foreground">{k}:</span> {v}</div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-border flex gap-2">
+          <Button variant="outline" onClick={onDeny} disabled={isPending} className="flex-1 gap-1.5" data-testid="button-confirm-deny">
+            <XCircle className="h-4 w-4" /> Отклонить
+          </Button>
+          <Button onClick={onConfirm} disabled={isPending} className="flex-1 gap-1.5" data-testid="button-confirm-approve">
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+            Подтвердить
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
+/** Live Log Entry */
+function LiveLogEntry({ event }: { event: AgentEvent }) {
+  const color = EVENT_COLORS[event.type] || "text-muted-foreground";
+  const icon = EVENT_ICONS[event.type] || "·";
+  if (event.type === "step_counter") return null;
+  const time = new Date(event.timestamp).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return (
+    <div className="log-line flex gap-2 py-0.5 border-b border-border/20 hover:bg-accent/20 transition-colors">
+      <span className="text-muted-foreground/40 shrink-0 text-[11px] font-mono w-[52px]">{time}</span>
+      <span className={`shrink-0 w-4 text-center ${color}`}>{icon}</span>
+      <span className={`text-[11px] shrink-0 font-mono ${color} w-[72px]`}>{event.type}</span>
+      <span className="text-xs break-all text-foreground/80">{event.detail}</span>
+    </div>
+  );
+}
+
+/** Mission Card — shows the current autonomous Computer task */
+function MissionCard({ mission, onClear }: { mission: ActiveMission; onClear: () => void }) {
+  const STEP_STATUS_ICON: Record<string, { icon: any; color: string }> = {
+    pending:  { icon: Clock, color: "text-muted-foreground/40" },
+    running:  { icon: Loader2, color: "text-blue-400" },
+    success:  { icon: CheckCircle2, color: "text-emerald-400" },
+    error:    { icon: XCircle, color: "text-red-400" },
+    skipped:  { icon: AlertTriangle, color: "text-yellow-400" },
+  };
+
+  const QUERY_TYPE_LABEL: Record<string, string> = {
+    search: "Поиск",
+    open_site: "Открыть сайт",
+    navigate_url: "Навигация",
+    agent_task: "Задача агента",
+  };
+
+  const overallIcon =
+    mission.overallStatus === "completed" ? CheckCircle2 :
+    mission.overallStatus === "error" ? XCircle : Loader2;
+  const overallColor =
+    mission.overallStatus === "completed" ? "text-emerald-400" :
+    mission.overallStatus === "error" ? "text-red-400" : "text-blue-400";
+
+  const OIcon = overallIcon;
+  const completedSteps = mission.steps.filter(s => s.status === "success" || s.status === "skipped").length;
+
+  return (
+    <div className="p-3 space-y-2" data-testid="mission-card">
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <OIcon className={`h-3.5 w-3.5 shrink-0 ${overallColor} ${mission.overallStatus === "running" ? "animate-spin" : ""}`} />
+          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 ${overallColor}`}>
+            {QUERY_TYPE_LABEL[mission.queryType] || mission.queryType}
+          </Badge>
+        </div>
+        <button onClick={onClear} className="text-muted-foreground/30 hover:text-muted-foreground/70 transition-colors" data-testid="button-clear-mission">
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+
+      {/* User request */}
+      <div className="bg-muted/30 rounded-md px-2.5 py-1.5">
+        <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider mb-0.5">Запрос</div>
+        <div className="text-[11px] font-medium text-foreground/90 break-words">{mission.userRequest}</div>
+      </div>
+
+      {/* Resolved URL */}
+      <div className="flex items-center gap-1.5">
+        <Globe className="h-3 w-3 text-muted-foreground/40 shrink-0" />
+        <span className="text-[10px] font-mono text-muted-foreground/60 truncate">{mission.resolvedUrl}</span>
+      </div>
+
+      {/* Plan steps */}
+      {mission.steps.length > 0 && (
+        <div className="space-y-0.5">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider">
+              План {mission.planSource === "model" ? "(модель)" : "(авто)"}
+            </div>
+            <div className="text-[9px] text-muted-foreground/40">
+              {completedSteps}/{mission.steps.length}
+            </div>
+          </div>
+          {mission.overallStatus === "running" && (
+            <Progress value={(completedSteps / Math.max(mission.steps.length, 1)) * 100} className="h-0.5 mb-1.5" />
+          )}
+          {mission.steps.map(step => {
+            const sc = STEP_STATUS_ICON[step.status] || STEP_STATUS_ICON.pending;
+            const StepIcon = sc.icon;
+            return (
+              <div
+                key={step.index}
+                className={`flex items-center gap-2 py-1 px-2 rounded ${
+                  step.status === "running" ? "bg-blue-500/8 border border-blue-500/20" :
+                  step.status === "success" ? "bg-emerald-500/5" :
+                  step.status === "error" ? "bg-red-500/8" : ""
+                }`}
+                data-testid={`mission-step-${step.index}`}
+              >
+                <StepIcon className={`h-3 w-3 shrink-0 ${sc.color} ${step.status === "running" ? "animate-spin" : ""}`} />
+                <span className={`text-[10px] flex-1 ${
+                  step.status === "success" ? "text-emerald-400/80 line-through" :
+                  step.status === "running" ? "text-foreground font-medium" :
+                  step.status === "error" ? "text-red-400" :
+                  "text-muted-foreground/60"
+                }`}>{step.description}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Result */}
+      {mission.result && (
+        <div className={`text-[10px] px-2.5 py-1.5 rounded-md ${
+          mission.overallStatus === "completed" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+        }`}>
+          {mission.result}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible Model Settings (compact) */
+function ModelSettingsCollapsible() {
+  const { toast } = useToast();
+  const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
+  const [form, setForm] = useState({
+    providerType: "ollama",
+    baseUrl: "http://localhost",
+    port: 11434,
+    model: "",
+    temperature: "0.7",
+    maxTokens: 2048,
+    safetyMode: "readonly",
+  });
+  const [models, setModels] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (settingsQuery.data && settingsQuery.data.providerType) {
+      setForm({
+        providerType: settingsQuery.data.providerType || "ollama",
+        baseUrl: settingsQuery.data.baseUrl || "http://localhost",
+        port: settingsQuery.data.port || 11434,
+        model: settingsQuery.data.model || "",
+        temperature: settingsQuery.data.temperature || "0.7",
+        maxTokens: settingsQuery.data.maxTokens || 2048,
+        safetyMode: settingsQuery.data.safetyMode || "readonly",
+      });
+    }
+  }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (form.providerType === "ollama" && form.port === 1234) setForm(f => ({ ...f, port: 11434 }));
+    else if (form.providerType === "lmstudio" && form.port === 11434) setForm(f => ({ ...f, port: 1234 }));
+  }, [form.providerType]);
+
+  const checkMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port });
+      return res.json();
+    },
+  });
+
+  const modelsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/providers/models", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.models) setModels(data.models);
+      if (data.error) toast({ title: "Ошибка", description: data.error, variant: "destructive" });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/settings", form);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
+      toast({ title: "Настройки сохранены" });
+    },
+  });
+
+  return (
+    <div className="border-t border-border/50" data-testid="model-connection-block">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent/20 transition-colors"
+        data-testid="button-toggle-model-settings"
+      >
+        <Server className="h-3 w-3 text-muted-foreground" />
+        <span className="text-[11px] text-muted-foreground flex-1 text-left">Настройки модели</span>
+        <div className="flex items-center gap-1">
+          {checkMutation.data?.ok && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+          {form.model && (
+            <Badge variant="outline" className="text-[9px] px-1 py-0 font-mono text-primary">
+              {form.model}
+            </Badge>
+          )}
+        </div>
+        {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
+      </button>
+      
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2 border-t border-border/30 pt-2">
+          {/* Provider toggle */}
+          <div className="flex gap-1 p-0.5 bg-muted/30 rounded-md">
+            <button
+              onClick={() => setForm(f => ({ ...f, providerType: "ollama" }))}
+              className={`flex-1 py-1 px-2 rounded text-[11px] font-medium transition-all ${form.providerType === "ollama" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid="button-provider-ollama"
+            >
+              Ollama
+            </button>
+            <button
+              onClick={() => setForm(f => ({ ...f, providerType: "lmstudio" }))}
+              className={`flex-1 py-1 px-2 rounded text-[11px] font-medium transition-all ${form.providerType === "lmstudio" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid="button-provider-lmstudio"
+            >
+              LM Studio
+            </button>
+          </div>
+
+          {/* Base URL + Port */}
+          <div className="flex gap-1.5">
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground mb-0.5 block">Base URL</label>
+              <Input
+                value={form.baseUrl}
+                onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
+                className="h-7 text-[11px] font-mono"
+                placeholder="http://localhost"
+                data-testid="input-base-url"
+              />
+            </div>
+            <div className="w-20">
+              <label className="text-[10px] text-muted-foreground mb-0.5 block">Порт</label>
+              <Input
+                type="number"
+                value={form.port}
+                onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value) || 11434 }))}
+                className="h-7 text-[11px] font-mono text-center"
+                data-testid="input-port"
+              />
+            </div>
+          </div>
+
+          {/* Model selection */}
+          <div>
+            <label className="text-[10px] text-muted-foreground mb-0.5 block">Модель</label>
+            {models.length > 0 ? (
+              <Select value={form.model} onValueChange={v => setForm(f => ({ ...f, model: v }))}>
+                <SelectTrigger className="h-7 text-[11px]" data-testid="select-model">
+                  <SelectValue placeholder="Выберите модель..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {models.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                value={form.model}
+                onChange={e => setForm(f => ({ ...f, model: e.target.value }))}
+                className="h-7 text-[11px] font-mono"
+                placeholder={form.providerType === "ollama" ? "llama3:latest" : "local-model"}
+                data-testid="input-model"
+              />
+            )}
+          </div>
+
+          {/* Safety mode */}
+          <div>
+            <label className="text-[10px] text-muted-foreground mb-0.5 block">Режим безопасности</label>
+            <Select value={form.safetyMode} onValueChange={v => setForm(f => ({ ...f, safetyMode: v }))}>
+              <SelectTrigger className="h-7 text-[11px]" data-testid="select-safety-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="readonly">Только чтение</SelectItem>
+                <SelectItem value="confirm">Подтверждение</SelectItem>
+                <SelectItem value="full">Полный доступ</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex gap-1.5">
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending} data-testid="button-check-connection">
+              {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+              Проверить
+            </Button>
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending} data-testid="button-get-models">
+              {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              Модели
+            </Button>
+            <Button size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-settings">
+              {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+              Сохранить
+            </Button>
+          </div>
+
+          {/* Status message */}
+          {checkMutation.data && (
+            <div className={`text-[11px] flex items-center gap-1.5 px-2 py-1.5 rounded-md ${checkMutation.data.ok ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
+              {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
+              <span>{checkMutation.data.message}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Replay Drawer */
+function ReplayDrawer({ taskId, onClose }: { taskId: number; onClose: () => void }) {
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const stepsQuery = useQuery<StepData[]>({
+    queryKey: ["/api/tasks", taskId, "steps"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/tasks/${taskId}/steps`);
+      return res.json();
+    },
+  });
+
+  const steps = stepsQuery.data || [];
+  const currentStep = steps[currentIdx];
+
+  useEffect(() => {
+    if (isPlaying && steps.length > 0) {
+      timerRef.current = setInterval(() => {
+        setCurrentIdx(prev => {
+          if (prev >= steps.length - 1) { setIsPlaying(false); return prev; }
+          return prev + 1;
+        });
+      }, 2000);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [isPlaying, steps.length]);
+
+  const togglePlay = () => {
+    if (currentIdx >= steps.length - 1) { setCurrentIdx(0); setIsPlaying(true); }
+    else { setIsPlaying(!isPlaying); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-[700px] max-h-[80vh] rounded-xl border border-border bg-card shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()} data-testid="replay-drawer">
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2 bg-card/80">
+          <RotateCcw className="h-4 w-4 text-primary" />
+          <span className="text-sm font-bold">Replay</span>
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono">Задача #{taskId}</Badge>
+          {steps.length > 0 && <span className="text-xs text-muted-foreground ml-auto">{currentIdx + 1} / {steps.length}</span>}
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}><X className="h-4 w-4" /></Button>
+        </div>
+        {stepsQuery.isLoading ? (
+          <div className="flex flex-col items-center justify-center p-12 text-muted-foreground">
+            <Loader2 className="h-6 w-6 animate-spin mb-2" />
+            <span className="text-xs">Загрузка шагов…</span>
+          </div>
+        ) : steps.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-12 text-muted-foreground/40">
+            <RotateCcw className="h-10 w-10 mb-3 opacity-20" />
+            <span className="text-xs font-medium">Нет шагов для replay</span>
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 bg-black/20 relative overflow-hidden min-h-[300px]">
+              {currentStep?.hasScreenshot ? (
+                <img src={`/api/tasks/${taskId}/steps/${currentStep.stepIndex}/screenshot?t=${Date.now()}`} alt={`Step ${currentStep.stepIndex}`} className="w-full h-full object-contain" data-testid="img-replay-screenshot" />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-muted-foreground/40 p-6">
+                  <Monitor className="h-10 w-10 mb-2 opacity-20" />
+                  <span className="text-[11px]">Нет скриншота для этого шага</span>
+                </div>
+              )}
+            </div>
+            {currentStep && (
+              <div className="px-4 py-2 border-t border-border bg-card/30">
+                <div className="flex items-center gap-2 mb-1">
+                  <Badge variant="outline" className="text-[10px] px-1 py-0 font-mono">{currentStep.action}</Badge>
+                  <Badge variant={currentStep.status === "success" ? "default" : "destructive"} className="text-[10px] px-1 py-0">{currentStep.status}</Badge>
+                </div>
+                <div className="text-[11px] text-foreground/70 line-clamp-2">{currentStep.detail}</div>
+              </div>
+            )}
+            <div className="px-4 py-2 border-t border-border flex items-center gap-2 bg-card/50">
+              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={currentIdx === 0} onClick={() => { setIsPlaying(false); setCurrentIdx(0); }}><StepBack className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={currentIdx === 0} onClick={() => { setIsPlaying(false); setCurrentIdx(Math.max(0, currentIdx - 1)); }}><ChevronLeft className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={togglePlay}>
+                {isPlaying ? <PauseCircle className="h-5 w-5 text-primary" /> : <PlayCircle className="h-5 w-5 text-primary" />}
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={currentIdx >= steps.length - 1} onClick={() => { setIsPlaying(false); setCurrentIdx(Math.min(steps.length - 1, currentIdx + 1)); }}><ChevronRight className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={currentIdx >= steps.length - 1} onClick={() => { setIsPlaying(false); setCurrentIdx(steps.length - 1); }}><StepForward className="h-4 w-4" /></Button>
+              <div className="flex-1 mx-2"><Progress value={steps.length > 1 ? (currentIdx / (steps.length - 1)) * 100 : 100} className="h-1.5" /></div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Terminal Panel ─────────────────────────────────────────────────────────
+
+function TerminalPanel({ sessionId }: { sessionId: string }) {
+  const { toast } = useToast();
+  const [input, setInput] = useState("");
+  const [history, setHistory] = useState<Array<{cmd: string; out: string; err: string; code: number | null; ms: number; blocked?: boolean}>>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const filesQuery = useQuery<{files: string[]; cwd: string}>({
+    queryKey: ["/api/terminal/files", sessionId],
+    queryFn: async () => { const res = await apiRequest("GET", `/api/terminal/files?sessionId=${sessionId}`); return res.json(); },
+    refetchInterval: 5000,
+  });
+
+  const runCmd = async () => {
+    const cmd = input.trim();
+    if (!cmd) return;
+    setInput("");
+    setIsRunning(true);
+    try {
+      const res = await apiRequest("POST", "/api/terminal/exec", { command: cmd, sessionId, timeout: 15000 });
+      const data = await res.json();
+      setHistory(prev => [...prev, { cmd, out: data.stdout || "", err: data.stderr || "", code: data.exitCode, ms: data.durationMs || 0, blocked: data.blocked }]);
+      setTimeout(() => outputRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+      if (cmd.startsWith("ls") || cmd.startsWith("mkdir") || cmd.startsWith("touch") || cmd.startsWith("rm") || cmd.startsWith("cp") || cmd.startsWith("mv")) {
+        queryClient.invalidateQueries({ queryKey: ["/api/terminal/files", sessionId] });
+      }
+    } catch (err: any) {
+      toast({ title: "Ошибка терминала", description: err.message, variant: "destructive" });
+    } finally { setIsRunning(false); }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0" data-testid="terminal-panel">
+      {/* Sandbox info */}
+      <div className="px-3 py-2 border-b border-border bg-muted/20 flex items-center gap-2">
+        <span className="text-[10px] font-mono text-muted-foreground truncate flex-1">
+          cwd: {filesQuery.data?.cwd || "..."}
+        </span>
+        <Badge variant="outline" className="text-[9px] px-1 py-0 text-muted-foreground">
+          {filesQuery.data?.files.length || 0} файлов
+        </Badge>
+      </div>
+      {/* Files list */}
+      {filesQuery.data && filesQuery.data.files.length > 0 && (
+        <div className="px-3 py-1 border-b border-border/50 flex flex-wrap gap-1">
+          {filesQuery.data.files.map(f => (
+            <Badge key={f} variant="outline" className="text-[9px] font-mono px-1 py-0">{f}</Badge>
+          ))}
+        </div>
+      )}
+      {/* Output area */}
+      <ScrollArea className="flex-1 bg-black/40">
+        <div className="p-2 space-y-2 font-mono text-[11px]">
+          {history.length === 0 && (
+            <div className="text-muted-foreground/40 py-6 text-center">
+              <p>Изолированный shell-терминал</p>
+              <p className="text-[10px] mt-1">Рабочая директория: /tmp/local-comet-sandbox/...</p>
+            </div>
+          )}
+          {history.map((h, i) => (
+            <div key={i} className="space-y-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-primary/60">$</span>
+                <span className="text-foreground">{h.cmd}</span>
+                <span className="text-muted-foreground/30 text-[9px] ml-auto">{h.ms}ms</span>
+              </div>
+              {h.blocked && (
+                <div className="text-orange-400 pl-4">[BLOCKED] {h.err}</div>
+              )}
+              {!h.blocked && h.out && (
+                <pre className="text-emerald-400/80 pl-4 whitespace-pre-wrap break-all">{h.out}</pre>
+              )}
+              {!h.blocked && h.err && (
+                <pre className="text-red-400/80 pl-4 whitespace-pre-wrap break-all">{h.err}</pre>
+              )}
+              {!h.blocked && h.code !== 0 && h.code !== null && (
+                <div className="text-red-400/60 pl-4 text-[10px]">exit {h.code}</div>
+              )}
+            </div>
+          ))}
+          <div ref={outputRef} />
+        </div>
+      </ScrollArea>
+      {/* Input */}
+      <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border bg-black/30">
+        <span className="text-primary/60 font-mono text-[11px] shrink-0">$</span>
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !isRunning) runCmd(); }}
+          placeholder="команда..."
+          className="flex-1 bg-transparent text-[11px] font-mono outline-none placeholder:text-muted-foreground/30"
+          disabled={isRunning}
+          data-testid="input-terminal"
+        />
+        <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0" onClick={runCmd} disabled={isRunning || !input.trim()} data-testid="button-terminal-run">
+          {isRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Code Sandbox Panel ──────────────────────────────────────────────────────
+
+const CODE_EXAMPLES: Record<string, { label: string; code: string }> = {
+  javascript: { label: "JS пример", code: `// Простой JS
+const nums = [1, 2, 3, 4, 5];
+const sum = nums.reduce((a, b) => a + b, 0);
+console.log('Сумма:', sum);
+console.log('Node version:', process.version);` },
+  python: { label: "Python пример", code: `# Простой Python
+nums = [1, 2, 3, 4, 5]
+print('Сумма:', sum(nums))
+import sys
+print('Python:', sys.version.split()[0])` },
+  bash: { label: "Bash пример", code: `#!/bin/bash
+echo "Дата: $(date)"
+echo "Директория: $(pwd)"
+ls -la 2>/dev/null | head -10` },
+};
+
+function SandboxPanel({ sessionId }: { sessionId: string }) {
+  const { toast } = useToast();
+  const [lang, setLang] = useState<"javascript" | "python" | "bash">("javascript");
+  const [code, setCode] = useState(CODE_EXAMPLES.javascript.code);
+  const [result, setResult] = useState<{output: string; error: string; exitCode: number | null; durationMs: number; language: string} | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+
+  const runCode = async () => {
+    if (!code.trim()) return;
+    setIsRunning(true);
+    try {
+      const res = await apiRequest("POST", "/api/sandbox/run", { code, language: lang, sessionId, timeout: 15000 });
+      const data = await res.json();
+      setResult(data);
+    } catch (err: any) {
+      toast({ title: "Ошибка sandbox", description: err.message, variant: "destructive" });
+    } finally { setIsRunning(false); }
+  };
+
+  const handleLangChange = (l: "javascript" | "python" | "bash") => {
+    setLang(l);
+    setCode(CODE_EXAMPLES[l].code);
+    setResult(null);
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0" data-testid="sandbox-panel">
+      {/* Lang selector */}
+      <div className="flex gap-0.5 p-1.5 border-b border-border shrink-0">
+        {(["javascript", "python", "bash"] as const).map(l => (
+          <button
+            key={l}
+            onClick={() => handleLangChange(l)}
+            className={`flex-1 py-1 px-2 rounded text-[10px] font-medium transition-all ${
+              lang === l ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+            }`}
+            data-testid={`button-lang-${l}`}
+          >
+            {l === "javascript" ? "JS" : l === "python" ? "Python" : "Bash"}
+          </button>
+        ))}
+      </div>
+      {/* Code editor (textarea) */}
+      <div className="flex-1 flex flex-col min-h-0 p-2">
+        <Textarea
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          className="flex-1 font-mono text-[11px] bg-black/30 resize-none min-h-[120px] text-foreground"
+          placeholder="Введите код..."
+          spellCheck={false}
+          data-testid="input-sandbox-code"
+        />
+      </div>
+      {/* Run button */}
+      <div className="px-2 pb-2 shrink-0">
+        <Button
+          className="w-full h-8 text-xs gap-1.5"
+          onClick={runCode}
+          disabled={isRunning || !code.trim()}
+          data-testid="button-sandbox-run"
+        >
+          {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          Запустить
+        </Button>
+      </div>
+      {/* Output */}
+      {result && (
+        <div className="border-t border-border px-2 py-1.5 bg-black/30 max-h-48 overflow-auto shrink-0">
+          <div className="flex items-center gap-2 mb-1">
+            <Badge variant="outline" className={`text-[9px] px-1 py-0 ${result.exitCode === 0 ? "text-emerald-400" : "text-red-400"}`}>
+              exit {result.exitCode}
+            </Badge>
+            <span className="text-[9px] text-muted-foreground">{result.durationMs}ms</span>
+            <span className="text-[9px] text-muted-foreground">{result.language}</span>
+          </div>
+          {result.output && (
+            <pre className="text-[10px] font-mono text-emerald-400/90 whitespace-pre-wrap break-all">{result.output}</pre>
+          )}
+          {result.error && (
+            <pre className="text-[10px] font-mono text-red-400/90 whitespace-pre-wrap break-all">{result.error}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Component ──────────────────────────────────────────────────────────
+
 export default function ControlCenter() {
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
+
+  // --- UI State ---
+  const [sidecarOpen, setSidecarOpen] = useState(true);
+  const [sidecarMode, setSidecarMode] = useState<SidecarMode>("computer");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [replayTaskId, setReplayTaskId] = useState<number | null>(null);
+  const [activeMission, setActiveMission] = useState<ActiveMission | null>(null);
+  const [showAdvancedTools, setShowAdvancedTools] = useState(false);
+
+  // --- Command input ---
+  const [commandValue, setCommandValue] = useState("");
+  const [browsingHistory, setBrowsingHistory] = useState<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+
+  // --- Task state ---
   const [targetUrl, setTargetUrl] = useState("");
   const [goalText, setGoalText] = useState("");
-  const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
-  const [runResult, setRunResult] = useState<RunResult | null>(null);
+  const [maxSteps, setMaxSteps] = useState(10);
+  const [isRunning, setIsRunning] = useState(false);
 
-  // Queries
-  const settingsQuery = useQuery<any>({
-    queryKey: ["/api/settings"],
-  });
+  // --- Workspace state ---
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(1);
+  const [activeSession, setActiveSession] = useState("default");
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
 
+  // --- SSE state ---
+  const [liveEvents, setLiveEvents] = useState<AgentEvent[]>([]);
+  const [currentPhase, setCurrentPhase] = useState("idle");
+  const [currentStep, setCurrentStep] = useState(0);
+  const [currentMaxSteps, setCurrentMaxSteps] = useState(0);
+  const [lastSnapshot, setLastSnapshot] = useState<PageSnapshot | null>(null);
+  const [nextAction, setNextAction] = useState<any>(null);
+
+  // --- Preview state ---
+  const [previewSync, setPreviewSync] = useState<PreviewSync | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // --- Element selection ---
+  const [selectedElement, setSelectedElementState] = useState<DOMElement | null>(null);
+
+  // --- Action console ---
+  const [actionResult, setActionResult] = useState<any>(null);
+  const [actionExecuting, setActionExecuting] = useState(false);
+
+  // --- Confirm state ---
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+
+  // --- Scroll ref ---
+  const sidecarLogRef = useRef<HTMLDivElement>(null);
+  const commandInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Queries ──
+  const settingsQuery = useQuery<any>({ queryKey: ["/api/settings"] });
+  const workspacesQuery = useQuery<Workspace[]>({ queryKey: ["/api/workspaces"], refetchInterval: 10000 });
   const tasksQuery = useQuery<AgentTask[]>({
-    queryKey: ["/api/tasks"],
+    queryKey: ["/api/tasks", activeWorkspaceId],
+    queryFn: async () => { const res = await apiRequest("GET", `/api/tasks?workspaceId=${activeWorkspaceId}`); return res.json(); },
+    refetchInterval: 3000,
+  });
+  const healthQuery = useQuery<any>({ queryKey: ["/api/health"] });
+  const sessionsQuery = useQuery<any[]>({
+    queryKey: ["/api/sessions", activeWorkspaceId],
+    queryFn: async () => { const res = await apiRequest("GET", `/api/sessions?workspaceId=${activeWorkspaceId}`); return res.json(); },
+    refetchInterval: 5000,
+  });
+  const tabsQuery = useQuery<SessionTab[]>({
+    queryKey: ["/api/tabs", activeWorkspaceId, activeSession],
+    queryFn: async () => { const res = await apiRequest("GET", `/api/tabs?workspaceId=${activeWorkspaceId}&sessionId=${activeSession}`); return res.json(); },
+    refetchInterval: 5000,
   });
 
-  const scenariosQuery = useQuery<DemoScenario[]>({
-    queryKey: ["/api/agent/demo-scenarios"],
-  });
+  // ── Load initial workspace ──
+  useEffect(() => {
+    if (workspacesQuery.data && workspacesQuery.data.length > 0) {
+      const active = workspacesQuery.data.find(w => w.isActive === 1);
+      if (active) setActiveWorkspaceId(active.id);
+    }
+  }, [workspacesQuery.data]);
 
-  const healthQuery = useQuery<any>({
-    queryKey: ["/api/health"],
-  });
+  useEffect(() => {
+    if (tabsQuery.data && tabsQuery.data.length > 0) {
+      const active = tabsQuery.data.find(t => t.isActive === 1);
+      if (active) setActiveTabId(active.id);
+      else setActiveTabId(tabsQuery.data[0].id);
+    }
+  }, [tabsQuery.data]);
 
   // Provider check
   const checkMutation = useMutation({
     mutationFn: async () => {
       const s = settingsQuery.data;
-      const res = await apiRequest("POST", "/api/providers/check", {
-        providerType: s?.providerType || "ollama",
-        baseUrl: s?.baseUrl || "http://localhost",
-        port: s?.port || 11434,
-      });
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || 11434 });
       return res.json();
     },
   });
 
-  // Run agent
+  // Confirm mutation
+  const confirmMutation = useMutation({
+    mutationFn: async (data: { taskId: number; approved: boolean }) => { const res = await apiRequest("POST", "/api/agent/confirm", data); return res.json(); },
+    onSuccess: () => { setConfirmRequest(null); },
+  });
+
+  // Create workspace
+  const createWorkspaceMutation = useMutation({
+    mutationFn: async (name: string) => { const res = await apiRequest("POST", "/api/workspaces", { name, description: "" }); return res.json(); },
+    onSuccess: (ws) => { queryClient.invalidateQueries({ queryKey: ["/api/workspaces"] }); toast({ title: "Workspace создан", description: ws.name }); },
+  });
+
+  // Create tab
+  const createTabMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/tabs", { workspaceId: activeWorkspaceId, sessionId: activeSession, label: `Tab ${(tabsQuery.data?.length || 0) + 1}`, url: "" });
+      return res.json();
+    },
+    onSuccess: (tab) => { queryClient.invalidateQueries({ queryKey: ["/api/tabs", activeWorkspaceId, activeSession] }); setActiveTabId(tab.id); },
+  });
+
+  // Manual action
+  const handleManualAction = useCallback(async (action: string, params: Record<string, string>) => {
+    setActionExecuting(true);
+    try {
+      const res = await apiRequest("POST", "/api/action/execute", { action, params, sessionId: activeSession });
+      const data = await res.json();
+      setActionResult(data.result);
+      setLiveEvents(prev => [...prev, { type: "manual_action", taskId: 0, detail: `[Computer] ${action}: ${data.result?.detail || ""}`, timestamp: new Date().toISOString() }]);
+      fetchPreview();
+    } catch (err: any) {
+      setActionResult({ status: "error", detail: err.message });
+    } finally { setActionExecuting(false); }
+  }, [activeSession]);
+
+  // Element selection
+  const handleSelectElement = useCallback(async (el: DOMElement | null) => {
+    setSelectedElementState(el);
+    try { await apiRequest("POST", "/api/element/select", { element: el, sessionId: activeSession }); } catch {}
+  }, [activeSession]);
+
+  // Fetch preview
+  const fetchPreview = useCallback(async () => {
+    try {
+      const res = await apiRequest("GET", `/api/preview?sessionId=${activeSession}`);
+      const data = await res.json();
+      setPreviewSync(data);
+      if (data.snapshot) setLastSnapshot(data.snapshot);
+    } catch {}
+  }, [activeSession]);
+
+  // Refresh preview
+  const handleRefreshPreview = useCallback(async () => {
+    setPreviewLoading(true);
+    try { await apiRequest("POST", "/api/preview/refresh"); await fetchPreview(); } catch {}
+    setPreviewLoading(false);
+  }, [fetchPreview]);
+
+  // Workspace switch
+  const handleWorkspaceSwitch = useCallback(async (id: number) => {
+    setActiveWorkspaceId(id);
+    try { await apiRequest("POST", `/api/workspaces/${id}/activate`); } catch {}
+    queryClient.invalidateQueries({ queryKey: ["/api/workspaces"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/tasks", id] });
+    queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+    setActiveSession("default");
+    setLiveEvents([]);
+    setLastSnapshot(null);
+    setPreviewSync(null);
+    setSelectedElementState(null);
+    setCurrentPhase("idle");
+    setCurrentStep(0);
+    setCurrentMaxSteps(0);
+    setActiveTabId(null);
+  }, []);
+
+  const handleCreateWorkspace = useCallback(() => {
+    const name = prompt("Название нового workspace:");
+    if (name?.trim()) createWorkspaceMutation.mutate(name.trim());
+  }, [createWorkspaceMutation]);
+
+  const handleSessionSwitch = useCallback((sessionId: string) => {
+    setActiveSession(sessionId);
+    setLiveEvents([]);
+    setLastSnapshot(null);
+    setPreviewSync(null);
+    setSelectedElementState(null);
+    setCurrentPhase("idle");
+    setCurrentStep(0);
+    setCurrentMaxSteps(0);
+    setActiveTabId(null);
+    setTimeout(() => fetchPreview(), 100);
+  }, [fetchPreview]);
+
+  const handleCreateSession = useCallback(() => { handleSessionSwitch(`session-${Date.now()}`); }, [handleSessionSwitch]);
+
+  const handleTabSwitch = useCallback(async (tabId: number) => {
+    setActiveTabId(tabId);
+    try { await apiRequest("POST", `/api/tabs/${tabId}/activate`); } catch {}
+    queryClient.invalidateQueries({ queryKey: ["/api/tabs", activeWorkspaceId, activeSession] });
+  }, [activeWorkspaceId, activeSession]);
+
+  const handleCreateTab = useCallback(() => { createTabMutation.mutate(); }, [createTabMutation]);
+
+  const handleExportSession = useCallback(() => {
+    window.open(`/api/export/session?workspaceId=${activeWorkspaceId}&sessionId=${activeSession}`, "_blank");
+  }, [activeWorkspaceId, activeSession]);
+
+  // SSE
+  useEffect(() => {
+    const evtSource = new EventSource("/api/events");
+    evtSource.onmessage = (event) => {
+      try {
+        const data: AgentEvent = JSON.parse(event.data);
+        if (data.type === "connected") return;
+        setLiveEvents(prev => [...prev, data]);
+        if (data.phase) setCurrentPhase(data.phase);
+        if (data.step !== undefined) setCurrentStep(data.step);
+        if (data.maxSteps !== undefined) setCurrentMaxSteps(data.maxSteps);
+        const eventSession = data.data?.sessionId;
+        if (data.type === "observation" && data.data?.snapshot) { if (!eventSession || eventSession === activeSession) setLastSnapshot(data.data.snapshot); }
+        if (data.type === "action_result" && data.data?.resultData?.snapshot) { if (!eventSession || eventSession === activeSession) setLastSnapshot(data.data.resultData.snapshot); }
+        if (data.type === "reasoning" && data.data?.nextAction) setNextAction(data.data.nextAction);
+        if (data.type === "preview_update") {
+          const ps = data.data?.sessionId || "default";
+          if (ps === activeSession) {
+            setPreviewSync({ url: data.data?.url || "", syncId: data.data?.syncId || 0, timestamp: data.data?.timestamp || data.timestamp, currentAction: data.data?.currentAction || null, hasScreenshot: data.data?.hasScreenshot || false, snapshot: data.data?.snapshot || null, sessionId: ps });
+            if (data.data?.snapshot) setLastSnapshot(data.data.snapshot);
+          }
+        }
+        if (data.type === "confirm_request") {
+          setConfirmRequest({ taskId: data.taskId, sessionId: data.data?.sessionId || "default", step: data.step || 0, action: data.data?.action || "", params: data.data?.params, detail: data.detail, riskLevel: data.data?.riskLevel || "low", riskReason: data.data?.riskReason || "" });
+        }
+        if (data.type === "completed") {
+          setIsRunning(false); setCurrentPhase("completed"); setNextAction(null);
+          queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/queue"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+          fetchPreview();
+          // Mark mission as completed
+          setActiveMission(prev => {
+            if (!prev || prev.taskId !== data.taskId) return prev;
+            const completed = data.data?.success !== false;
+            return {
+              ...prev,
+              overallStatus: completed ? "completed" : "error",
+              result: completed ? "Задача выполнена" : (data.detail || "Завершено с ошибкой"),
+              steps: prev.steps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s),
+            };
+          });
+        }
+        if (data.type === "queue_update") {
+          queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/queue"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+          if (data.data?.status === "running") { setIsRunning(true); setCurrentPhase("navigate"); }
+        }
+        // Drive mission step progress from action events
+        if ((data.type === "action" || data.type === "action_result") && data.step !== undefined) {
+          setActiveMission(prev => {
+            if (!prev) return prev;
+            const stepIdx = data.step!;
+            return {
+              ...prev,
+              steps: prev.steps.map((s, i) => {
+                if (data.type === "action" && i === stepIdx) return { ...s, status: "running" as const };
+                if (data.type === "action_result" && i === stepIdx) {
+                  const ok = data.data?.status !== "error";
+                  return { ...s, status: ok ? "success" as const : "error" as const };
+                }
+                if (i < stepIdx && s.status === "pending") return { ...s, status: "success" as const };
+                return s;
+              }),
+            };
+          });
+        }
+      } catch {}
+    };
+    evtSource.onerror = () => {};
+    return () => evtSource.close();
+  }, [fetchPreview, activeSession]);
+
+  // Auto scroll sidecar log
+  useEffect(() => { sidecarLogRef.current?.scrollIntoView({ behavior: "smooth" }); }, [liveEvents]);
+
+  // Run agent (direct: url + goal)
   const runMutation = useMutation({
-    mutationFn: async (data: { url: string; goal: string }) => {
+    mutationFn: async (data: { url: string; goal: string; maxSteps: number; sessionId: string; workspaceId: number }) => {
       const res = await apiRequest("POST", "/api/agent/run", data);
       return res.json();
     },
-    onSuccess: (data: RunResult) => {
-      setRunResult(data);
-      setActiveTaskId(data.task?.id || null);
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      toast({
-        title: "Задача выполнена",
-        description: data.planSource === "model" ? "План от модели" : "Эвристический план",
+      queryClient.invalidateQueries({ queryKey: ["/api/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+      if (data.sessionId && data.sessionId !== activeSession) setActiveSession(data.sessionId);
+      toast({ title: "Задача добавлена", description: `#${data.task?.id} в очереди` });
+    },
+    onError: (err: Error) => { toast({ title: "Ошибка", description: err.message, variant: "destructive" }); },
+  });
+
+  // Computer run: natural language → auto intent → agent
+  const computerRunMutation = useMutation({
+    mutationFn: async (data: { query: string; sessionId: string; workspaceId: number; maxSteps?: number }) => {
+      const res = await apiRequest("POST", "/api/computer/run", data);
+      return res.json();
+    },
+    onMutate: (variables) => {
+      // Immediately show a pending mission so the panel feels instant
+      setActiveMission({
+        userRequest: variables.query,
+        resolvedUrl: "",
+        goal: "",
+        queryType: "agent_task",
+        planSource: "heuristic",
+        taskId: 0,
+        steps: [
+          { index: 0, action: "navigate", description: "Анализ запроса…", status: "running" },
+        ],
+        overallStatus: "running",
+        startedAt: new Date().toISOString(),
       });
+      setSidecarMode("computer");
+      if (!sidecarOpen) setSidecarOpen(true);
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/queue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+      if (data.sessionId && data.sessionId !== activeSession) setActiveSession(data.sessionId);
+      setTargetUrl(data.resolvedUrl || "");
+      setGoalText(data.goal || "");
+
+      // Populate the mission card with actual plan steps from the server
+      if (data.task && data.planSteps) {
+        setActiveMission({
+          userRequest: variables.query,
+          resolvedUrl: data.resolvedUrl || "",
+          goal: data.goal || "",
+          queryType: data.queryType || "agent_task",
+          planSource: data.planSource || "heuristic",
+          taskId: data.task.id,
+          steps: (data.planSteps as MissionStep[]).map((s: MissionStep) => ({
+            ...s,
+            status: "pending" as const,
+          })),
+          overallStatus: "running",
+          startedAt: new Date().toISOString(),
+        });
+      }
+
+      setLiveEvents(prev => [...prev, {
+        type: "action", taskId: data.task?.id || 0,
+        detail: `[Computer] задача #${data.task?.id}: ${data.resolvedUrl}`,
+        timestamp: new Date().toISOString(),
+      }]);
     },
     onError: (err: Error) => {
-      toast({
-        title: "Ошибка выполнения",
-        description: err.message,
-        variant: "destructive",
-      });
+      setActiveMission(prev => prev ? { ...prev, overallStatus: "error", result: err.message } : null);
+      toast({ title: "Ошибка Computer", description: err.message, variant: "destructive" });
     },
   });
 
-  const handleRun = () => {
-    if (!targetUrl || !goalText) {
-      toast({ title: "Заполните URL и задачу", variant: "destructive" });
-      return;
-    }
-    setRunResult(null);
-    runMutation.mutate({ url: targetUrl, goal: goalText });
-  };
+  // ── CORE: Command Submit Handler (intent parsing) ──
+  const handleCommandSubmit = useCallback(() => {
+    const raw = commandValue.trim();
+    if (!raw) return;
+    setCommandValue("");
 
-  const handleDemoSelect = (scenario: DemoScenario) => {
-    setTargetUrl(scenario.targetUrl);
-    setGoalText(scenario.goal);
+    // All commands go through computerRunMutation —
+    // this creates an agent task with a visible plan, resolves URL server-side,
+    // and shows mission card with step-by-step execution.
+    computerRunMutation.mutate({ query: raw, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
+
+    // For instant UX feedback, also do a local preview navigate for known site/URL patterns
+    const intent = parseIntent(raw);
+    if ((intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search") && intent.url) {
+      setTargetUrl(intent.url);
+      setBrowsingHistory(prev => [...prev, intent.url!]);
+      setHistoryIdx(browsingHistory.length);
+      // Fire-and-forget browser navigate for immediate visual feedback
+      handleManualAction("navigate", { url: intent.url }).catch(() => {});
+    }
+  }, [commandValue, maxSteps, activeSession, activeWorkspaceId, browsingHistory, handleManualAction, computerRunMutation]);
+
+  // Example command click — submit through the same autonomous flow
+  const handleExampleClick = useCallback((text: string) => {
+    setCommandValue(text);
+    // Small delay so the input shows the text before submitting
+    setTimeout(() => {
+      computerRunMutation.mutate({ query: text, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
+      setCommandValue("");
+      const intent = parseIntent(text);
+      if ((intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search") && intent.url) {
+        setTargetUrl(intent.url);
+        setBrowsingHistory(prev => [...prev, intent.url!]);
+        setHistoryIdx(prev => prev + 1);
+        handleManualAction("navigate", { url: intent.url }).catch(() => {});
+      }
+    }, 80);
+  }, [computerRunMutation, handleManualAction, activeSession, activeWorkspaceId, maxSteps, browsingHistory]);
+
+  const handleConfirm = (approved: boolean) => { if (confirmRequest) confirmMutation.mutate({ taskId: confirmRequest.taskId, approved }); };
+  const handleReplay = (taskId: number) => { setReplayTaskId(taskId); };
+
+  const handleBack = () => {
+    if (historyIdx > 0) {
+      const newIdx = historyIdx - 1;
+      setHistoryIdx(newIdx);
+      const url = browsingHistory[newIdx];
+      setCommandValue("");
+      setTargetUrl(url);
+      handleManualAction("navigate", { url });
+    }
+  };
+  const handleForward = () => {
+    if (historyIdx < browsingHistory.length - 1) {
+      const newIdx = historyIdx + 1;
+      setHistoryIdx(newIdx);
+      const url = browsingHistory[newIdx];
+      setCommandValue("");
+      setTargetUrl(url);
+      handleManualAction("navigate", { url });
+    }
   };
 
   const settings = settingsQuery.data;
@@ -157,329 +1313,583 @@ export default function ControlCenter() {
   const safetyConfig = SAFETY_MODES[safetyMode] || SAFETY_MODES.readonly;
   const SafetyIcon = safetyConfig.icon;
 
+  const allTasks = tasksQuery.data || [];
+  const sessionTasks = allTasks.filter(t => t.sessionId === activeSession);
+  const queuedCount = allTasks.filter(t => t.status === "queued").length;
+  const runningCount = allTasks.filter(t => t.status === "running").length;
+
+  const tabs = tabsQuery.data || [];
+  const phaseConfig = PHASE_CONFIG[currentPhase] || PHASE_CONFIG.idle;
+  const PhaseIcon = phaseConfig.icon;
+
   return (
-    <div className="h-screen flex flex-col bg-background" data-testid="control-center">
-      {/* Top bar */}
-      <header className="h-12 border-b border-border flex items-center px-4 gap-4 shrink-0">
-        <div className="flex items-center gap-2">
-          <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-label="Local Comet" className="text-primary">
-            <circle cx="16" cy="16" r="6" stroke="currentColor" strokeWidth="2" />
-            <path d="M16 4 L18 10 L16 8 L14 10 Z" fill="currentColor" opacity="0.7" />
-            <path d="M4 16 L10 14 L8 16 L10 18 Z" fill="currentColor" opacity="0.5" />
-            <path d="M28 16 L22 18 L24 16 L22 14 Z" fill="currentColor" opacity="0.5" />
-            <path d="M16 28 L14 22 L16 24 L18 22 Z" fill="currentColor" opacity="0.7" />
-            <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 4" opacity="0.3" />
-          </svg>
-          <span className="font-semibold text-sm tracking-tight">Local Comet</span>
+    <div className="h-screen flex flex-col bg-background select-none" data-testid="control-center">
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          BROWSER TAB BAR (minimal)
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      <div className="h-9 bg-card/60 border-b border-border flex items-center px-2 gap-0.5 shrink-0" data-testid="tab-bar">
+        {/* Window controls aesthetic */}
+        <div className="flex gap-1.5 px-2 shrink-0">
+          <div className="w-3 h-3 rounded-full bg-red-500/60 hover:bg-red-500 transition-colors" />
+          <div className="w-3 h-3 rounded-full bg-yellow-500/60 hover:bg-yellow-500 transition-colors" />
+          <div className="w-3 h-3 rounded-full bg-green-500/60 hover:bg-green-500 transition-colors" />
         </div>
 
-        <Separator orientation="vertical" className="h-5" />
-
-        <div className="flex items-center gap-2 text-xs">
-          <div className={`w-2 h-2 rounded-full ${healthQuery.data?.status === "ok" ? "bg-green-500 status-pulse" : "bg-red-500"}`} />
-          <span className="text-muted-foreground">Сервер</span>
+        {/* Tabs */}
+        <div className="flex-1 flex items-center gap-0.5 overflow-x-auto px-1 min-w-0">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => handleTabSwitch(tab.id)}
+              className={`flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-t-md text-[11px] transition-all shrink-0 max-w-[160px] group ${
+                activeTabId === tab.id
+                  ? "bg-background text-foreground font-medium border-t border-l border-r border-border -mb-px"
+                  : "hover:bg-accent/40 text-muted-foreground"
+              }`}
+              data-testid={`button-tab-${tab.id}`}
+            >
+              <Globe className="h-3 w-3 shrink-0 opacity-50" />
+              <span className="truncate">{tab.label || tab.url || "New Tab"}</span>
+            </button>
+          ))}
+          <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={handleCreateTab} data-testid="button-new-tab">
+            <Plus className="h-3 w-3" />
+          </Button>
         </div>
 
-        <div className="flex items-center gap-2 text-xs">
-          <div className={`w-2 h-2 rounded-full ${checkMutation.data?.ok ? "bg-green-500" : "bg-muted-foreground"}`} />
-          <span className="text-muted-foreground">
-            {settings?.providerType === "lmstudio" ? "LM Studio" : "Ollama"}
-          </span>
-          {settings?.model && (
-            <span className="text-foreground/80">{settings.model}</span>
+        {/* Status + theme toggle */}
+        <div className="flex items-center gap-2 pl-2 shrink-0">
+          <div className="flex items-center gap-1">
+            <div className={`w-1.5 h-1.5 rounded-full ${healthQuery.data?.status === "ok" ? "bg-emerald-500 status-pulse" : "bg-red-500"}`} />
+            <span className="text-[9px] text-muted-foreground">SRV</span>
+          </div>
+          {(queuedCount > 0 || runningCount > 0) && (
+            <Badge variant="outline" className="text-[9px] px-1 py-0">
+              {runningCount > 0 && `${runningCount} active`}
+              {runningCount > 0 && queuedCount > 0 && " · "}
+              {queuedCount > 0 && `${queuedCount} queued`}
+            </Badge>
           )}
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={toggleTheme} data-testid="button-theme-toggle">
+            {theme === "dark" ? <Sun className="h-3 w-3" /> : <Moon className="h-3 w-3" />}
+          </Button>
+          <Link href="/kwork">
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] gap-1 text-primary hover:text-primary" data-testid="button-nav-kwork">
+              <TrendingUp className="h-3 w-3" />
+              Kwork
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          COMMAND BAR — the single main input (Computer-first)
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      <div className="h-12 border-b border-border flex items-center gap-2 px-3 shrink-0 bg-card/30" data-testid="command-bar">
+        {/* Nav buttons */}
+        <div className="flex items-center gap-0.5">
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleBack} disabled={historyIdx <= 0} data-testid="button-back">
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleForward} disabled={historyIdx >= browsingHistory.length - 1} data-testid="button-forward">
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleRefreshPreview} disabled={previewLoading} data-testid="button-reload">
+            <RefreshCw className={`h-3.5 w-3.5 ${previewLoading ? "animate-spin" : ""}`} />
+          </Button>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <Badge variant="outline" className="gap-1 text-xs">
-            <SafetyIcon className="h-3 w-3" />
-            {safetyConfig.label}
-          </Badge>
+        {/* Main Command Input */}
+        <div className="flex-1 flex items-center gap-2 h-9 bg-muted/40 hover:bg-muted/60 focus-within:bg-muted/70 focus-within:ring-1 focus-within:ring-primary/30 rounded-lg px-3 transition-all" data-testid="command-input-wrapper">
+          {isRunning ? (
+            <Loader2 className="h-3.5 w-3.5 text-primary animate-spin shrink-0" />
+          ) : actionExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin shrink-0" />
+          ) : (
+            <CommandIcon className="h-3.5 w-3.5 text-primary/60 shrink-0" />
+          )}
+          <input
+            ref={commandInputRef}
+            type="text"
+            value={commandValue}
+            onChange={e => setCommandValue(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleCommandSubmit(); }}
+            placeholder="Напишите команду: «открой google», «найди в google …», или любую задачу"
+            className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/40"
+            data-testid="input-command"
+          />
+          {commandValue && (
+            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0" onClick={() => setCommandValue("")}>
+              <X className="h-3 w-3" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7"
-            onClick={toggleTheme}
-            data-testid="button-theme-toggle"
+            className="h-6 w-6 shrink-0 text-primary hover:text-primary"
+            onClick={handleCommandSubmit}
+            disabled={!commandValue.trim()}
+            data-testid="button-command-submit"
           >
-            {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            <Send className="h-3.5 w-3.5" />
           </Button>
         </div>
-      </header>
 
-      {/* Main 3-column layout */}
+        {/* Sidecar toggle */}
+        <Button
+          variant={sidecarOpen ? "default" : "outline"}
+          size="sm"
+          className="h-8 gap-1.5 text-xs px-3"
+          onClick={() => setSidecarOpen(!sidecarOpen)}
+          data-testid="button-toggle-sidecar"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Computer
+        </Button>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          MAIN CONTENT: Browser Viewport + Sidecar
+          ═══════════════════════════════════════════════════════════════════════════ */}
       <div className="flex-1 flex min-h-0">
-        {/* Left sidebar: tasks + history + demos */}
-        <aside className="w-64 border-r border-border flex flex-col shrink-0">
-          <div className="p-3 border-b border-border">
-            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-              <Rocket className="h-3.5 w-3.5" />
-              Демо-сценарии
-            </div>
-            {scenariosQuery.data?.map(scenario => (
-              <button
-                key={scenario.id}
-                onClick={() => handleDemoSelect(scenario)}
-                className="w-full text-left p-2 rounded-md hover:bg-accent/50 transition-colors mb-1 group"
-                data-testid={`button-demo-${scenario.id}`}
-              >
-                <div className="text-xs font-medium group-hover:text-primary transition-colors">{scenario.title}</div>
-                <div className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">{scenario.description}</div>
-              </button>
-            ))}
-          </div>
 
-          <div className="p-3 flex-1 overflow-hidden flex flex-col">
-            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-              <History className="h-3.5 w-3.5" />
-              История задач
-            </div>
-            <ScrollArea className="flex-1">
-              {tasksQuery.data?.length === 0 && (
-                <p className="text-xs text-muted-foreground text-center py-4">Нет выполненных задач</p>
+        {/* ── Browser Viewport ── */}
+        <main className="flex-1 flex flex-col min-w-0 bg-background" data-testid="browser-viewport">
+          {previewSync?.hasScreenshot ? (
+            <div className="flex-1 relative overflow-hidden bg-neutral-900/20">
+              <img
+                key={previewSync.syncId}
+                src={`/api/preview/screenshot?sessionId=${activeSession}&t=${previewSync.syncId}`}
+                alt="Browser Preview"
+                className="w-full h-full object-contain"
+                data-testid="img-preview-screenshot"
+              />
+              {previewLoading && (
+                <div className="absolute inset-0 bg-background/50 flex items-center justify-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                </div>
               )}
-              {tasksQuery.data?.map(task => (
-                <button
-                  key={task.id}
-                  onClick={() => setActiveTaskId(task.id)}
-                  className={`w-full text-left p-2 rounded-md transition-colors mb-1 ${
-                    activeTaskId === task.id ? "bg-accent" : "hover:bg-accent/50"
-                  }`}
-                  data-testid={`button-task-${task.id}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium truncate flex-1">{task.title}</span>
-                    <StatusBadge status={task.status} />
-                  </div>
-                  <div className="text-[11px] text-muted-foreground truncate mt-0.5">{task.targetUrl}</div>
-                </button>
-              ))}
-            </ScrollArea>
-          </div>
-        </aside>
-
-        {/* Center: task input + execution journal */}
-        <main className="flex-1 flex flex-col min-w-0">
-          {/* Task input area */}
-          <div className="p-4 border-b border-border">
-            <div className="flex gap-3 mb-3">
-              <div className="flex-1 flex items-center gap-2">
-                <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
-                <Input
-                  placeholder="URL страницы (например, https://example.com)"
-                  value={targetUrl}
-                  onChange={e => setTargetUrl(e.target.value)}
-                  className="h-9 text-sm"
-                  data-testid="input-target-url"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <div className="flex-1 flex items-start gap-2">
-                <Bot className="h-4 w-4 text-muted-foreground shrink-0 mt-2.5" />
-                <Textarea
-                  placeholder="Опишите задачу для агента (например, «Суммаризировать содержимое страницы»)"
-                  value={goalText}
-                  onChange={e => setGoalText(e.target.value)}
-                  className="min-h-[60px] text-sm resize-none"
-                  rows={2}
-                  data-testid="input-goal-text"
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Button
-                  onClick={handleRun}
-                  disabled={runMutation.isPending || !targetUrl || !goalText}
-                  className="h-9 gap-2"
-                  data-testid="button-run-agent"
-                >
-                  {runMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
+              {/* Floating phase indicator */}
+              {isRunning && (
+                <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card/90 backdrop-blur border border-border shadow-lg">
+                  <PhaseIcon className={`h-3.5 w-3.5 ${phaseConfig.color} ${!["idle", "completed", "error"].includes(currentPhase) ? "animate-pulse" : ""}`} />
+                  <span className={`text-[11px] font-bold ${phaseConfig.color}`}>{phaseConfig.label}</span>
+                  {currentMaxSteps > 0 && (
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 font-mono">{currentStep}/{currentMaxSteps}</Badge>
                   )}
-                  Запустить
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-xs gap-1"
-                  onClick={() => checkMutation.mutate()}
-                  disabled={checkMutation.isPending}
-                  data-testid="button-check-provider"
-                >
-                  <Zap className="h-3 w-3" />
-                  Проверить
-                </Button>
+                </div>
+              )}
+              {/* URL bar inside viewport */}
+              {previewSync?.url && (
+                <div className="absolute bottom-3 left-3 right-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card/90 backdrop-blur border border-border shadow-lg">
+                  <Globe className="h-3 w-3 text-muted-foreground/50 shrink-0" />
+                  <span className="text-[10px] font-mono text-muted-foreground truncate">{previewSync.url}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* ── Computer-first Onboarding Empty State ── */
+            <div className="flex-1 flex items-center justify-center">
+              <div className="max-w-lg text-center px-8">
+                {/* Logo */}
+                <div className="relative inline-flex items-center justify-center mb-5">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-label="Local Comet" className="text-primary">
+                      <circle cx="16" cy="16" r="6" stroke="currentColor" strokeWidth="2" />
+                      <path d="M16 4 L18 10 L16 8 L14 10 Z" fill="currentColor" opacity="0.7" />
+                      <path d="M4 16 L10 14 L8 16 L10 18 Z" fill="currentColor" opacity="0.5" />
+                      <path d="M28 16 L22 18 L24 16 L22 14 Z" fill="currentColor" opacity="0.5" />
+                      <path d="M16 28 L14 22 L16 24 L18 22 Z" fill="currentColor" opacity="0.7" />
+                      <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 4" opacity="0.3" />
+                    </svg>
+                  </div>
+                </div>
+
+                <h1 className="text-lg font-bold mb-1">Local Comet</h1>
+                <p className="text-sm text-muted-foreground mb-6">
+                  Пишите команды естественным языком. Computer выполнит.
+                </p>
+
+                {/* Example Commands — main UX element */}
+                <div className="space-y-1.5 mb-6">
+                  {EXAMPLE_COMMANDS.map((cmd, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleExampleClick(cmd.text)}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border/50 hover:border-primary/30 hover:bg-accent/30 transition-all group text-left"
+                      data-testid={`button-example-${i}`}
+                    >
+                      <span className="text-base w-6 text-center shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">{cmd.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-foreground/80 group-hover:text-primary transition-colors font-mono">{cmd.text}</div>
+                        <div className="text-[10px] text-muted-foreground/50">{cmd.description}</div>
+                      </div>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-primary/50 transition-colors shrink-0" />
+                    </button>
+                  ))}
+                </div>
+
+                {/* Capabilities grid */}
+                <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground/40">
+                  {CAPABILITIES.map((cap, i) => (
+                    <span key={i} className="flex items-center gap-1">
+                      <span>{cap.icon}</span>
+                      <span>{cap.title}</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
-            {checkMutation.data && (
-              <div className={`mt-2 text-xs flex items-center gap-1 ${checkMutation.data.ok ? "text-green-500" : "text-red-400"}`}>
-                {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                {checkMutation.data.message}
-              </div>
-            )}
-          </div>
-
-          {/* Execution journal */}
-          <ScrollArea className="flex-1 p-4">
-            {runMutation.isPending && (
-              <div className="flex items-center gap-3 justify-center py-12 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <span className="text-sm">Агент выполняет задачу...</span>
-              </div>
-            )}
-
-            {!runMutation.isPending && !runResult && (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                <Bot className="h-12 w-12 mb-4 opacity-30" />
-                <p className="text-sm font-medium mb-1">Центр управления Local Comet</p>
-                <p className="text-xs">Укажите URL и задачу, или выберите демо-сценарий</p>
-              </div>
-            )}
-
-            {runResult && (
-              <div className="space-y-4">
-                {/* Plan */}
-                <Card className="p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="h-4 w-4 text-primary" />
-                    <span className="text-sm font-semibold">План выполнения</span>
-                    <Badge variant="outline" className="text-xs ml-auto">
-                      {runResult.planSource === "model" ? "от модели" : "эвристический"}
-                    </Badge>
-                  </div>
-                  <div className="space-y-1">
-                    {runResult.plan.map((step: any, i: number) => {
-                      const result = runResult.results[i];
-                      const statusColor = result
-                        ? result.status === "success" ? "text-green-400"
-                        : result.status === "error" ? "text-red-400"
-                        : result.status === "warning" ? "text-yellow-400"
-                        : "text-muted-foreground"
-                        : "text-muted-foreground";
-                      return (
-                        <div key={i} className="flex items-start gap-2 py-1 text-xs">
-                          <span className={`shrink-0 mt-0.5 ${statusColor}`}>
-                            {result?.status === "success" ? "✓" : result?.status === "error" ? "✗" : result?.status === "warning" ? "⚠" : "○"}
-                          </span>
-                          <span className="font-mono text-muted-foreground">{step.action}</span>
-                          {step.params && (
-                            <span className="text-muted-foreground/60 truncate">
-                              {Object.entries(step.params).map(([k, v]) => `${k}=${v}`).join(", ")}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Card>
-
-                {/* Results detail */}
-                {runResult.results.map((result: any, i: number) => (
-                  <Card key={i} className="p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono text-xs text-primary">{result.action}</span>
-                      <StatusBadge status={result.status} />
-                    </div>
-                    <p className="text-xs text-muted-foreground">{result.detail}</p>
-                    {result.data && (
-                      <details className="mt-2">
-                        <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                          Данные
-                        </summary>
-                        <pre className="mt-1 text-xs font-mono bg-muted/30 p-2 rounded overflow-x-auto max-h-48">
-                          {JSON.stringify(result.data, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </Card>
-                ))}
-
-                {/* Execution log */}
-                <Card className="p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <History className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm font-semibold">Журнал выполнения</span>
-                  </div>
-                  {runResult.logs.map((log: any, i: number) => (
-                    <LogEntry key={i} log={log} />
-                  ))}
-                </Card>
-              </div>
-            )}
-          </ScrollArea>
+          )}
         </main>
 
-        {/* Right sidebar: settings */}
-        <aside className="w-72 border-l border-border flex flex-col shrink-0">
-          <div className="p-3 border-b border-border">
-            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              <Settings className="h-3.5 w-3.5" />
-              Настройки
+        {/* ═══════════════════════════════════════════════════════════════════════════
+            RIGHT SIDECAR: Computer Panel (primary)
+            ═══════════════════════════════════════════════════════════════════════════ */}
+        {sidecarOpen && (
+          <aside className="w-[340px] border-l border-border flex flex-col shrink-0 bg-card/30" data-testid="sidecar-panel">
+
+            {/* Sidecar Header */}
+            <div className="h-10 border-b border-border flex items-center px-3 gap-2 shrink-0 bg-card/50">
+              <MonitorSmartphone className="h-3.5 w-3.5 text-primary" />
+              <span className="text-xs font-bold">Computer</span>
+              <div className="flex-1" />
+              <Badge variant="outline" className={`gap-1 text-[9px] ${safetyConfig.color}`}>
+                <SafetyIcon className="h-2.5 w-2.5" /> {safetyConfig.label}
+              </Badge>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setSidecarOpen(false)}>
+                <PanelRightClose className="h-3.5 w-3.5" />
+              </Button>
             </div>
-          </div>
-          <ScrollArea className="flex-1 p-3">
-            <div className="space-y-4">
-              {/* Provider info */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Провайдер</label>
-                <div className="text-sm font-medium">
-                  {settings?.providerType === "lmstudio" ? "LM Studio" : "Ollama"}
+
+            {/* Mode Tabs: primary = Agent / Chat; secondary = Terminal / Code (advanced tools) */}
+            <div className="flex border-b border-border shrink-0" data-testid="sidecar-modes">
+              {([
+                { id: "computer" as SidecarMode, label: "Agent", icon: MonitorSmartphone },
+                { id: "chat" as SidecarMode, label: "Chat", icon: MessageSquare },
+                { id: "research" as SidecarMode, label: "Research", icon: BookOpen },
+              ]).map(mode => (
+                <button
+                  key={mode.id}
+                  onClick={() => { setSidecarMode(mode.id); setShowAdvancedTools(false); }}
+                  className={`flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium transition-all border-b-2 shrink-0 ${
+                    sidecarMode === mode.id && !showAdvancedTools
+                      ? "text-primary border-primary"
+                      : "text-muted-foreground border-transparent hover:text-foreground hover:border-muted"
+                  }`}
+                  data-testid={`button-mode-${mode.id}`}
+                >
+                  <mode.icon className="h-3 w-3" />
+                  {mode.label}
+                </button>
+              ))}
+              {/* Advanced tools toggle (Terminal / Code) */}
+              <button
+                onClick={() => setShowAdvancedTools(v => !v)}
+                className={`flex items-center justify-center gap-1 py-2 px-2.5 text-[10px] font-medium transition-all border-b-2 shrink-0 ${
+                  showAdvancedTools
+                    ? "text-amber-400 border-amber-400"
+                    : "text-muted-foreground/50 border-transparent hover:text-muted-foreground hover:border-muted"
+                }`}
+                data-testid="button-mode-advanced"
+                title="Terminal и Code Sandbox"
+              >
+                <MoreHorizontal className="h-3 w-3" />
+              </button>
+            </div>
+            {/* Advanced tools sub-tabs (only when expanded) */}
+            {showAdvancedTools && (
+              <div className="flex border-b border-border bg-muted/20 shrink-0" data-testid="advanced-tools-tabs">
+                {([
+                  { id: "terminal" as SidecarMode, label: "Terminal", icon: Server },
+                  { id: "sandbox" as SidecarMode, label: "Code", icon: Cpu },
+                ]).map(mode => (
+                  <button
+                    key={mode.id}
+                    onClick={() => setSidecarMode(mode.id)}
+                    className={`flex-1 flex items-center justify-center gap-1 py-1.5 text-[10px] font-medium transition-all border-b-2 shrink-0 ${
+                      sidecarMode === mode.id
+                        ? "text-amber-400 border-amber-400"
+                        : "text-muted-foreground/60 border-transparent hover:text-foreground hover:border-muted"
+                    }`}
+                    data-testid={`button-mode-${mode.id}`}
+                  >
+                    <mode.icon className="h-3 w-3" />
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Sidecar Content */}
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+
+              {/* === COMPUTER MODE (default) — autonomous mission view === */}
+              {sidecarMode === "computer" && (
+                <div className="flex-1 flex flex-col min-h-0">
+
+                  {/* ── Active Mission Card ── */}
+                  {activeMission ? (
+                    <div className="border-b border-border">
+                      <MissionCard
+                        mission={activeMission}
+                        onClear={() => setActiveMission(null)}
+                      />
+                    </div>
+                  ) : !isRunning && liveEvents.length === 0 ? (
+                    /* Empty state */
+                    <div className="flex flex-col items-center justify-center py-10 text-muted-foreground/30 px-4 text-center">
+                      <MonitorSmartphone className="h-8 w-8 mb-3 opacity-20" />
+                      <p className="text-[11px] font-medium">Напишите задачу</p>
+                      <p className="text-[10px] mt-1 max-w-[200px]">
+                        Computer сам построит план и выполнит. Например: «открой grok», «найди в google …»
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {/* ── What the agent currently sees ── */}
+                  {lastSnapshot && (
+                    <div className="px-3 py-2 border-b border-border shrink-0">
+                      <div className="text-[9px] text-muted-foreground/40 uppercase tracking-wider mb-1">Страница</div>
+                      <div className="text-[11px] font-medium truncate">{lastSnapshot.title || "Без заголовка"}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground truncate">{lastSnapshot.url}</div>
+                      <div className="flex gap-3 mt-1 text-[10px]">
+                        <span className="text-blue-400">{lastSnapshot.stats.links} ссыл</span>
+                        <span className="text-amber-400">{lastSnapshot.stats.buttons} кн</span>
+                        <span className="text-green-400">{lastSnapshot.stats.inputs} поле</span>
+                        <span className="text-purple-400">{lastSnapshot.stats.headings} заг</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Live event log (secondary, collapsed by default if mission visible) ── */}
+                  {liveEvents.length > 0 && (
+                    <ScrollArea className="flex-1">
+                      <div className="p-2 space-y-0">
+                        {liveEvents.map((event, i) => <LiveLogEntry key={i} event={event} />)}
+                        <div ref={sidecarLogRef} />
+                      </div>
+                    </ScrollArea>
+                  )}
                 </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  {settings?.baseUrl || "http://localhost"}:{settings?.port || 11434}
+              )}
+
+              {/* === CHAT MODE === */}
+              {sidecarMode === "chat" && (
+                <div className="flex-1 flex flex-col min-h-0">
+                  {/* Task input area (secondary — for manual URL+goal) */}
+                  <div className="p-3 border-b border-border space-y-2">
+                    <div className="flex gap-1.5">
+                      <Globe className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0 mt-2" />
+                      <Input
+                        placeholder="URL (опционально)"
+                        value={targetUrl}
+                        onChange={e => setTargetUrl(e.target.value)}
+                        className="h-7 text-[11px] font-mono"
+                        data-testid="input-target-url"
+                      />
+                    </div>
+                    <Textarea
+                      placeholder="Что нужно сделать?"
+                      value={goalText}
+                      onChange={e => setGoalText(e.target.value)}
+                      className="min-h-[48px] text-xs resize-none"
+                      rows={2}
+                      data-testid="input-goal-text"
+                    />
+                    <div className="flex gap-1.5">
+                      <Button
+                        onClick={() => {
+                          if (!goalText) { toast({ title: "Заполните задачу", variant: "destructive" }); return; }
+                          const url = targetUrl || "https://www.google.com";
+                          runMutation.mutate({ url, goal: goalText, maxSteps, sessionId: activeSession, workspaceId: activeWorkspaceId });
+                        }}
+                        disabled={runMutation.isPending || !goalText}
+                        className="flex-1 h-8 gap-1.5 text-xs"
+                        data-testid="button-run-agent"
+                      >
+                        {runMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        Запуск
+                      </Button>
+                      <div className="flex items-center gap-1 bg-muted/30 rounded-md px-2">
+                        <Hash className="h-2.5 w-2.5 text-muted-foreground/40" />
+                        <Input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={maxSteps}
+                          onChange={e => setMaxSteps(parseInt(e.target.value) || 10)}
+                          className="h-7 w-10 text-[10px] text-center font-mono border-0 bg-transparent p-0"
+                          title="Лимит шагов"
+                          data-testid="input-max-steps"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Chat event history */}
+                  <ScrollArea className="flex-1">
+                    <div className="p-2 space-y-0">
+                      {liveEvents.length === 0 && !isRunning && (
+                        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/30">
+                          <MessageSquare className="h-8 w-8 mb-3 opacity-30" />
+                          <p className="text-[11px] font-medium">Начните диалог</p>
+                          <p className="text-[10px] mt-1">Введите задачу и нажмите «Запуск»</p>
+                        </div>
+                      )}
+                      {liveEvents.map((event, i) => (
+                        <LiveLogEntry key={i} event={event} />
+                      ))}
+                      <div ref={sidecarLogRef} />
+                    </div>
+                  </ScrollArea>
                 </div>
-              </div>
+              )}
 
-              <Separator />
+              {/* === RESEARCH MODE === */}
+              {sidecarMode === "research" && (
+                <div className="flex-1 flex flex-col min-h-0">
+                  <div className="p-3 space-y-2">
+                    <Textarea
+                      placeholder="Что исследовать?"
+                      value={goalText}
+                      onChange={e => setGoalText(e.target.value)}
+                      className="min-h-[60px] text-xs resize-none"
+                      rows={3}
+                      data-testid="input-research-query"
+                    />
+                    <Button
+                      onClick={() => {
+                        if (goalText) {
+                          const url = targetUrl || "https://www.google.com";
+                          runMutation.mutate({ url, goal: `Исследовать: ${goalText}`, maxSteps: 15, sessionId: activeSession, workspaceId: activeWorkspaceId });
+                        }
+                      }}
+                      disabled={runMutation.isPending || !goalText}
+                      className="w-full h-8 gap-1.5 text-xs"
+                      data-testid="button-research-start"
+                    >
+                      {runMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                      Начать исследование
+                    </Button>
+                  </div>
 
-              {/* Model */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Модель</label>
-                <div className="text-sm">
-                  {settings?.model || <span className="text-muted-foreground italic">не выбрана</span>}
+                  <ScrollArea className="flex-1">
+                    <div className="p-2 space-y-0">
+                      {liveEvents.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/30">
+                          <BookOpen className="h-8 w-8 mb-3 opacity-30" />
+                          <p className="text-[11px] font-medium">Режим исследования</p>
+                          <p className="text-[10px] mt-1">Агент проанализирует несколько источников</p>
+                        </div>
+                      ) : (
+                        liveEvents.map((event, i) => <LiveLogEntry key={i} event={event} />)
+                      )}
+                      <div ref={sidecarLogRef} />
+                    </div>
+                  </ScrollArea>
                 </div>
-              </div>
+              )}
 
-              {/* Temperature */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Temperature</label>
-                <div className="text-sm font-mono">{settings?.temperature || "0.7"}</div>
-              </div>
+              {/* === TERMINAL MODE === */}
+              {sidecarMode === "terminal" && (
+                <TerminalPanel sessionId={activeSession} />
+              )}
 
-              {/* Max tokens */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Max tokens</label>
-                <div className="text-sm font-mono">{settings?.maxTokens || 2048}</div>
-              </div>
+              {/* === CODE SANDBOX MODE === */}
+              {sidecarMode === "sandbox" && (
+                <SandboxPanel sessionId={activeSession} />
+              )}
+            </div>
 
-              <Separator />
+            {/* ── Model Settings (collapsed by default) ── */}
+            <ModelSettingsCollapsible />
 
-              {/* Safety mode */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Режим безопасности</label>
-                <div className="flex items-center gap-2">
-                  <SafetyIcon className="h-4 w-4 text-primary" />
-                  <div>
-                    <div className="text-sm font-medium">{safetyConfig.label}</div>
-                    <div className="text-[11px] text-muted-foreground">{safetyConfig.desc}</div>
+            {/* ── Secondary Actions (collapsed) ── */}
+            <div className="border-t border-border/50 shrink-0">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent/20 transition-colors text-[11px] text-muted-foreground"
+                data-testid="button-toggle-advanced"
+              >
+                <MoreHorizontal className="h-3 w-3" />
+                <span>Доп. инструменты</span>
+                <div className="flex-1" />
+                {showAdvanced ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              </button>
+              {showAdvanced && (
+                <div className="px-3 pb-3 space-y-1.5">
+                  {/* Queue overview */}
+                  <div className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Очередь и история</div>
+                  {sessionTasks.length === 0 && allTasks.length === 0 ? (
+                    <p className="text-[10px] text-muted-foreground/40 py-1">Пусто</p>
+                  ) : (
+                    <div className="max-h-28 overflow-auto space-y-0.5">
+                      {(sessionTasks.length > 0 ? sessionTasks : allTasks.slice(0, 5)).map(task => {
+                        const sc = STATUS_CONFIG[task.status] || STATUS_CONFIG.queued;
+                        const SI = sc.icon;
+                        return (
+                          <div
+                            key={task.id}
+                            onClick={() => handleReplay(task.id)}
+                            className="flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-accent/40 transition-colors"
+                            data-testid={`card-task-${task.id}`}
+                          >
+                            <SI className={`h-3 w-3 ${sc.color} ${task.status === "running" ? "animate-spin" : ""} shrink-0`} />
+                            <span className="text-[10px] font-medium truncate flex-1">{task.title}</span>
+                            <Badge variant="outline" className={`text-[8px] px-1 py-0 ${sc.color}`}>{sc.label}</Badge>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Workspace / Session info */}
+                  <div className="flex gap-2 text-[10px] pt-1">
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <Briefcase className="h-2.5 w-2.5" />
+                      <span>{(workspacesQuery.data || []).find(w => w.id === activeWorkspaceId)?.name || "Default"}</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <CircleDot className="h-2.5 w-2.5" />
+                      <span className="font-mono">{activeSession.length > 15 ? activeSession.slice(0, 15) + "…" : activeSession}</span>
+                    </div>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex gap-1.5 flex-wrap">
+                    <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleCreateWorkspace} data-testid="button-new-workspace">
+                      <Plus className="h-2.5 w-2.5" /> Workspace
+                    </Button>
+                    <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleCreateSession} data-testid="button-new-session">
+                      <Plus className="h-2.5 w-2.5" /> Сессия
+                    </Button>
+                    <Button variant="outline" size="sm" className="h-6 text-[9px] gap-1" onClick={handleExportSession} data-testid="button-export-session">
+                      <Download className="h-2.5 w-2.5" /> Экспорт
+                    </Button>
                   </div>
                 </div>
-              </div>
-
-              <Separator />
-
-              <Link href="/settings">
-                <Button variant="outline" size="sm" className="w-full gap-2 text-xs" data-testid="button-open-settings">
-                  <Settings className="h-3.5 w-3.5" />
-                  Все настройки
-                </Button>
-              </Link>
+              )}
             </div>
-          </ScrollArea>
-        </aside>
+          </aside>
+        )}
       </div>
+
+      {/* ── Replay Drawer (overlay) ── */}
+      {replayTaskId && (
+        <ReplayDrawer taskId={replayTaskId} onClose={() => setReplayTaskId(null)} />
+      )}
+
+      {/* ── Risk Card Confirm Dialog ── */}
+      {confirmRequest && (
+        <RiskCard
+          confirmReq={confirmRequest}
+          onConfirm={() => handleConfirm(true)}
+          onDeny={() => handleConfirm(false)}
+          isPending={confirmMutation.isPending}
+        />
+      )}
     </div>
   );
 }

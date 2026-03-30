@@ -34,18 +34,29 @@ export default function SettingsPage() {
   });
 
   const [models, setModels] = useState<string[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<{ok: boolean; message: string} | null>(null);
+  const [autoChecked, setAutoChecked] = useState(false);
 
   useEffect(() => {
     if (settingsQuery.data && settingsQuery.data.providerType) {
+      const d = settingsQuery.data;
       setForm({
-        providerType: settingsQuery.data.providerType || "ollama",
-        baseUrl: settingsQuery.data.baseUrl || "http://localhost",
-        port: settingsQuery.data.port || 11434,
-        model: settingsQuery.data.model || "",
-        temperature: settingsQuery.data.temperature || "0.7",
-        maxTokens: settingsQuery.data.maxTokens || 2048,
-        safetyMode: settingsQuery.data.safetyMode || "readonly",
+        providerType: d.providerType || "ollama",
+        baseUrl: d.baseUrl || "http://localhost",
+        port: d.port || 11434,
+        model: d.model || "",
+        temperature: d.temperature || "0.7",
+        maxTokens: d.maxTokens || 2048,
+        safetyMode: d.safetyMode || "readonly",
       });
+      // Auto-check connection and load models on first settings load
+      if (!autoChecked) {
+        setAutoChecked(true);
+        setTimeout(() => {
+          checkMutation.mutateAsync().then(r => setConnectionStatus(r)).catch(() => {});
+          modelsMutation.mutateAsync().then(r => { if (r.models) setModels(r.models); }).catch(() => {});
+        }, 300);
+      }
     }
   }, [settingsQuery.data]);
 
@@ -68,6 +79,7 @@ export default function SettingsPage() {
       });
       return res.json();
     },
+    onSuccess: (data) => { setConnectionStatus(data); },
   });
 
   // List models
@@ -208,10 +220,19 @@ export default function SettingsPage() {
                   Загрузить модели
                 </Button>
               </div>
-              {checkMutation.data && (
-                <div className={`text-xs flex items-center gap-1 ${checkMutation.data.ok ? "text-green-500" : "text-red-400"}`}>
-                  {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                  {checkMutation.data.message}
+              {connectionStatus && (
+                <div className={`text-xs flex items-center gap-2 p-2 rounded-md ${connectionStatus.ok ? "text-green-500 bg-green-500/10" : "text-red-400 bg-red-500/10"}`}>
+                  {connectionStatus.ok ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
+                  {connectionStatus.message}
+                  {connectionStatus.ok && models.length > 0 && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">{models.length} моделей доступно</span>
+                  )}
+                </div>
+              )}
+              {settingsQuery.isLoading && (
+                <div className="text-xs text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Проверка подключения...
                 </div>
               )}
             </div>
