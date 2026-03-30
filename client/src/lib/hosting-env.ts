@@ -10,6 +10,11 @@
  *   - Cloud API providers (OpenAI, Anthropic, Gemini) work fine because they
  *     use external HTTPS endpoints.
  *
+ * In local mode (npm run dev):
+ *   - The server runs on the same machine as Ollama / LM Studio.
+ *   - Default Ollama port: 11436 (non-standard to avoid conflicts with system Ollama).
+ *   - All local provider checks work as expected.
+ *
  * Detection heuristic: if the API_BASE contains a port proxy token (__PORT_XXXX__)
  * that has been replaced with an actual value, the app is deployed to a public host.
  * Otherwise (API_BASE is empty), we assume we're running locally on the same host
@@ -28,6 +33,31 @@ export function isHostedPreview(): boolean {
 }
 
 /**
+ * Returns true when the app is running locally (not a hosted preview).
+ * In local mode, Ollama and LM Studio are reachable.
+ */
+export function isLocalMode(): boolean {
+  return !isHostedPreview();
+}
+
+/**
+ * Returns the mode label for display in the UI.
+ */
+export function modeBadgeLabel(): string {
+  return isHostedPreview() ? "Preview" : "Local";
+}
+
+/**
+ * Returns a short user-facing description of the current mode.
+ */
+export function modeDescription(): string {
+  if (isHostedPreview()) {
+    return "Hosted preview — только облачные API. Ollama и LM Studio недоступны.";
+  }
+  return "Local mode — доступны Ollama, LM Studio и облачные API.";
+}
+
+/**
  * Returns a human-readable note to display when a local provider is selected
  * but the app is running in hosted-preview mode.
  */
@@ -38,3 +68,9 @@ export function localProviderHostedNote(): string {
     "Для использования Ollama/LM Studio: запустите приложение локально (npm run dev)."
   );
 }
+
+/**
+ * Default Ollama port for local mode.
+ * Using 11436 (non-standard) to avoid conflicts with system-wide Ollama installation.
+ */
+export const DEFAULT_OLLAMA_PORT = 11436;

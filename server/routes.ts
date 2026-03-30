@@ -153,7 +153,7 @@ export async function registerRoutes(
       res.json(settings || {
         providerType: "ollama",
         baseUrl: "http://localhost",
-        port: 11434,
+        port: 11436,
         model: "",
         apiKey: "",
         temperature: "0.7",
@@ -181,7 +181,7 @@ export async function registerRoutes(
       const result = await checkProvider({
         providerType: providerType || "ollama",
         baseUrl: baseUrl || "http://localhost",
-        port: port || 11434,
+        port: port || 11436,
         model: model || "",
         apiKey: apiKey || "",
         temperature: 0.7,
@@ -200,7 +200,7 @@ export async function registerRoutes(
       const models = await listModels({
         providerType: providerType || "ollama",
         baseUrl: baseUrl || "http://localhost",
-        port: port || 11434,
+        port: port || 11436,
         model: model || "",
         apiKey: apiKey || "",
         temperature: 0.7,
@@ -220,7 +220,7 @@ export async function registerRoutes(
         {
           providerType: providerType || "ollama",
           baseUrl: baseUrl || "http://localhost",
-          port: port || 11434,
+          port: port || 11436,
           model: model || "",
           apiKey: apiKey || "",
           temperature: parseFloat(temperature) || 0.7,

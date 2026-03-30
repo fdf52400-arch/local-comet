@@ -38,7 +38,7 @@ import { Link } from "wouter";
 import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
-import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
+import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -387,7 +387,7 @@ function MissionCard({ mission, onClear }: { mission: ActiveMission; onClear: ()
 
 // ─── Provider config for sidecar ─────────────────────────────────────────────
 const SIDECAR_PROVIDERS = [
-  { id: "ollama",           label: "Ollama",           local: true,  defaultBaseUrl: "http://localhost", defaultPort: 11434, hasPort: true,  hasApiKey: false, modelPlaceholder: "llama3.2, mistral…" },
+  { id: "ollama",           label: "Ollama",           local: true,  defaultBaseUrl: "http://localhost", defaultPort: DEFAULT_OLLAMA_PORT, hasPort: true,  hasApiKey: false, modelPlaceholder: "llama3.2, mistral…" },
   { id: "lmstudio",         label: "LM Studio",        local: true,  defaultBaseUrl: "http://localhost", defaultPort: 1234,  hasPort: true,  hasApiKey: false, modelPlaceholder: "local-model" },
   { id: "openai_compatible",label: "OpenAI Compatible", local: false, defaultBaseUrl: "http://localhost", defaultPort: 8080,  hasPort: true,  hasApiKey: true,  modelPlaceholder: "gpt-3.5-turbo, custom…" },
   { id: "openai",           label: "OpenAI",           local: false, defaultBaseUrl: "https://api.openai.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "gpt-4o, gpt-4-turbo…" },
@@ -402,7 +402,7 @@ function ModelSettingsCollapsible() {
   const [form, setForm] = useState({
     providerType: "ollama" as string,
     baseUrl: "http://localhost",
-    port: 11434,
+    port: DEFAULT_OLLAMA_PORT,
     model: "",
     apiKey: "",
     temperature: "0.7",
@@ -422,7 +422,7 @@ function ModelSettingsCollapsible() {
       setForm({
         providerType: d.providerType || "ollama",
         baseUrl: d.baseUrl || "http://localhost",
-        port: d.port || 11434,
+        port: d.port || DEFAULT_OLLAMA_PORT,
         model: d.model || "",
         apiKey: d.apiKey || "",
         temperature: d.temperature || "0.7",
@@ -576,7 +576,7 @@ function ModelSettingsCollapsible() {
                 <Input
                   type="number"
                   value={form.port}
-                  onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value) || (currentProvDef.defaultPort ?? 11434) }))}
+                  onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value) || (currentProvDef.defaultPort ?? DEFAULT_OLLAMA_PORT) }))}
                   className="h-7 text-[11px] font-mono text-center"
                   data-testid="input-port"
                 />
@@ -650,13 +650,18 @@ function ModelSettingsCollapsible() {
             </Select>
           </div>
 
-          {/* Action buttons — available for all providers */}
+          {/* Action buttons */}
+          {isLocal && isHostedPreview() ? (
+            <div className="text-[10px] text-muted-foreground/60 bg-blue-500/8 border border-blue-500/15 rounded-md px-2 py-1.5" data-testid="local-check-disabled-preview">
+              Проверка недоступна в preview mode — localhost невидим. Сохранить конфигурацию можно.
+            </div>
+          ) : null}
           <div className="flex gap-1.5">
-            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending || (!isLocal && !form.apiKey.trim())} data-testid="button-check-connection">
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending || (!isLocal && !form.apiKey.trim()) || (isLocal && isHostedPreview())} data-testid="button-check-connection">
               {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
               Проверить
             </Button>
-            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending || (!isLocal && !form.apiKey.trim())} data-testid="button-get-models">
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending || (!isLocal && !form.apiKey.trim()) || (isLocal && isHostedPreview())} data-testid="button-get-models">
               {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
               Модели
             </Button>
@@ -666,17 +671,11 @@ function ModelSettingsCollapsible() {
             </Button>
           </div>
 
-          {/* Status message — shown for all providers */}
+          {/* Status message — shown for cloud providers */}
           {checkMutation.data && (
             <div className={`text-[11px] flex items-center gap-1.5 px-2 py-1.5 rounded-md ${checkMutation.data.ok ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
               {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
               <span>{checkMutation.data.message}</span>
-            </div>
-          )}
-          {/* Hosted preview explanation for failed local check */}
-          {checkMutation.data && !checkMutation.data.ok && isLocal && isHostedPreview() && (
-            <div className="text-[10px] text-amber-400/70 px-2">
-              Это ожидаемо — публичный preview не видит ваш localhost.
             </div>
           )}
         </div>
@@ -1030,7 +1029,7 @@ function ProviderConnectBlock() {
     apiRequest("POST", "/api/providers/check", {
       providerType: s.providerType || "ollama",
       baseUrl: s.baseUrl || "http://localhost",
-      port: s.port || 11434,
+      port: s.port || DEFAULT_OLLAMA_PORT,
       apiKey: s.apiKey || "",
       model: s.model || "",
     })
@@ -1122,7 +1121,7 @@ function ProviderConnectBlock() {
             )}
             <div className="grid grid-cols-3 gap-2">
               {[
-                { label: "Ollama", hint: "localhost:11434", local: true },
+                { label: "Ollama", hint: "localhost:" + DEFAULT_OLLAMA_PORT, local: true },
                 { label: "LM Studio", hint: "localhost:1234", local: true },
                 { label: "API Key", hint: "OpenAI / Claude / Gemini", local: false },
               ].map(opt => (
@@ -1253,7 +1252,7 @@ export default function ControlCenter() {
     // Skip auto-check for local providers in hosted preview
     if (LOCAL_PROVIDERS.includes(s.providerType) && isHostedPreview()) return;
     setProviderStatus(prev => ({ ...prev, checking: true }));
-    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || 11434, apiKey: s.apiKey || "", model: s.model || "" })
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || DEFAULT_OLLAMA_PORT, apiKey: s.apiKey || "", model: s.model || "" })
       .then(r => r.json())
       .then(d => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }))
       .catch(() => setProviderStatus({ ok: false, checked: true, checking: false }));
@@ -1263,7 +1262,7 @@ export default function ControlCenter() {
   const checkMutation = useMutation({
     mutationFn: async () => {
       const s = settingsQuery.data;
-      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || 11434, apiKey: s?.apiKey || "", model: s?.model || "" });
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || DEFAULT_OLLAMA_PORT, apiKey: s?.apiKey || "", model: s?.model || "" });
       return res.json();
     },
     onSuccess: (d) => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }),
@@ -1949,6 +1948,11 @@ export default function ControlCenter() {
               <MonitorSmartphone className="h-3.5 w-3.5 text-primary" />
               <span className="text-xs font-bold">Computer</span>
               <div className="flex-1" />
+              {isHostedPreview() ? (
+                <Badge variant="outline" className="gap-1 text-[9px] text-blue-400 border-blue-500/30 bg-blue-500/5" data-testid="badge-preview-mode">Preview</Badge>
+              ) : (
+                <Badge variant="outline" className="gap-1 text-[9px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5" data-testid="badge-local-mode">Local</Badge>
+              )}
               <Badge variant="outline" className={`gap-1 text-[9px] ${safetyConfig.color}`}>
                 <SafetyIcon className="h-2.5 w-2.5" /> {safetyConfig.label}
               </Badge>

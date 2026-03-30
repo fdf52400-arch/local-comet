@@ -13,11 +13,11 @@ import {
   ArrowLeft, Save, Zap, CheckCircle2, XCircle, Loader2,
   RefreshCw, MessageSquare, ShieldCheck, ShieldAlert, Shield,
   AlertCircle, Info, Server, Terminal, Cloud, KeyRound, Eye, EyeOff,
-  ExternalLink, AlertTriangle,
+  ExternalLink,
 } from "lucide-react";
 import { Link } from "wouter";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, type ProviderType } from "@shared/schema";
-import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
+import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
 
 // ─── Provider definitions ─────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ const PROVIDER_DEFS: ProviderDef[] = [
     icon: Server,
     description: "Открытый источник, быстрый старт, работает локально",
     defaultBaseUrl: "http://localhost",
-    defaultPort: 11434,
+    defaultPort: DEFAULT_OLLAMA_PORT,
     hasPort: true,
     hasApiKey: false,
     hasBaseUrl: true,
@@ -133,18 +133,16 @@ const PROVIDER_DEFS: ProviderDef[] = [
   },
 ];
 
-// ─── Hosted preview warning for local providers ───────────────────────────────
+// ─── Preview mode notice for local providers ──────────────────────────────────────
 function LocalProviderHostedWarning({ providerLabel }: { providerLabel: string }) {
   if (!isHostedPreview()) return null;
   return (
-    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="local-provider-hosted-warning">
-      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-      <div className="space-y-1">
-        <p className="text-xs text-amber-300 font-semibold">Локальный провайдер в публичном preview</p>
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {localProviderHostedNote()}
-        </p>
-      </div>
+    <div className="bg-blue-500/10 border border-blue-500/25 rounded-lg p-3" data-testid="local-provider-hosted-warning">
+      <p className="text-xs text-blue-300 font-semibold mb-1">Preview mode: {providerLabel} недоступен</p>
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Hosted preview не имеет доступа к localhost вашего компьютера.
+        Для работы с {providerLabel} запустите приложение локально: <code className="font-mono bg-black/20 px-1 rounded">npm run dev</code>.
+      </p>
     </div>
   );
 }
@@ -267,7 +265,7 @@ export default function SettingsPage() {
   const [form, setForm] = useState({
     providerType: "ollama" as ProviderType,
     baseUrl: "http://localhost",
-    port: 11434,
+    port: DEFAULT_OLLAMA_PORT,
     model: "",
     apiKey: "",
     temperature: "0.7",
@@ -290,7 +288,7 @@ export default function SettingsPage() {
       setForm({
         providerType: d.providerType || "ollama",
         baseUrl: d.baseUrl || "http://localhost",
-        port: d.port || 11434,
+        port: d.port || DEFAULT_OLLAMA_PORT,
         model: d.model || "",
         apiKey: d.apiKey || "",
         temperature: d.temperature || "0.7",
@@ -306,7 +304,7 @@ export default function SettingsPage() {
             const res = await apiRequest("POST", "/api/providers/check", {
               providerType: d.providerType || "ollama",
               baseUrl: d.baseUrl || "http://localhost",
-              port: d.port || 11434,
+              port: d.port || DEFAULT_OLLAMA_PORT,
               apiKey: "",
             });
             const result = await res.json();
@@ -316,7 +314,7 @@ export default function SettingsPage() {
               const mRes = await apiRequest("POST", "/api/providers/models", {
                 providerType: d.providerType || "ollama",
                 baseUrl: d.baseUrl || "http://localhost",
-                port: d.port || 11434,
+                port: d.port || DEFAULT_OLLAMA_PORT,
                 apiKey: "",
               });
               const mData = await mRes.json();
@@ -446,6 +444,11 @@ export default function SettingsPage() {
           </Button>
         </Link>
         <span className="font-semibold text-sm">Настройки провайдера</span>
+        {isHostedPreview() ? (
+          <Badge variant="outline" className="text-[10px] text-blue-400 border-blue-500/30 bg-blue-500/5" data-testid="badge-preview-mode">Preview mode</Badge>
+        ) : (
+          <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5" data-testid="badge-local-mode">Local mode</Badge>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {autoChecking && !connectionStatus && (
             <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground" data-testid="badge-checking">
@@ -625,77 +628,80 @@ export default function SettingsPage() {
 
               {/* Connection check buttons — for ALL providers */}
               <div className="space-y-2">
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => checkMutation.mutate()}
-                    disabled={checkMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
-                    className="gap-2 text-xs"
-                    data-testid="button-check-connection"
-                  >
-                    {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-                    Проверить подключение
-                  </Button>
-                  {currentProviderDef.supportsModelList && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleLoadModels}
-                      disabled={modelsMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
-                      className="gap-2 text-xs"
-                      data-testid="button-load-models"
-                    >
-                      {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                      Загрузить модели
-                    </Button>
-                  )}
-                </div>
-
-                {isCloudProvider && !form.apiKey.trim() && (
-                  <p className="text-[11px] text-muted-foreground">Введите API key для проверки подключения</p>
-                )}
-
-                {/* Connection status */}
-                {connectionStatus && (
-                  <div className={`text-xs flex items-start gap-2 p-2.5 rounded-md ${
-                    connectionStatus.ok
-                      ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
-                      : "text-red-400 bg-red-500/10 border border-red-500/20"
-                  }`} data-testid="connection-status">
-                    {connectionStatus.ok
-                      ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                      : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
-                    <div className="space-y-0.5">
-                      <div className="font-medium">{connectionStatus.message}</div>
-                      {connectionStatus.ok && models.length > 0 && (
-                        <div className="text-[11px] text-muted-foreground">{models.length} моделей доступно</div>
-                      )}
-                      {connectionStatus.ok && isCloudProvider && !currentProviderDef.supportsModelList && (
-                        <div className="text-[11px] text-muted-foreground">{currentProviderDef.modelListNote}</div>
+                {/* Check/load buttons — only for cloud providers or local mode */}
+                {isLocalProvider && isHostedPreview() ? (
+                  <div className="text-[11px] text-muted-foreground/70 bg-blue-500/8 border border-blue-500/20 rounded-md p-2.5" data-testid="local-check-disabled-preview">
+                    Проверка недоступна в preview mode — hosted preview не видит ваш localhost.
+                    Запустите приложение локально для работы с {currentProviderDef.label}.
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => checkMutation.mutate()}
+                        disabled={checkMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
+                        className="gap-2 text-xs"
+                        data-testid="button-check-connection"
+                      >
+                        {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                        Проверить подключение
+                      </Button>
+                      {currentProviderDef.supportsModelList && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleLoadModels}
+                          disabled={modelsMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
+                          className="gap-2 text-xs"
+                          data-testid="button-load-models"
+                        >
+                          {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                          Загрузить модели
+                        </Button>
                       )}
                     </div>
-                  </div>
-                )}
 
-                {/* Degraded mode info when local provider is offline */}
-                {connectionStatus && !connectionStatus.ok && isLocalProvider && (
-                  <DegradedInfo providerType={form.providerType} />
-                )}
+                    {isCloudProvider && !form.apiKey.trim() && (
+                      <p className="text-[11px] text-muted-foreground">Введите API key для проверки подключения</p>
+                    )}
 
-                {/* Hosted preview check result explanation */}
-                {connectionStatus && !connectionStatus.ok && isLocalProvider && isHostedPreview() && (
-                  <div className="text-[11px] text-amber-400/80 bg-amber-500/8 border border-amber-500/20 rounded-md p-2.5">
-                    Это ожидаемо — публичный preview не может достучаться до вашего localhost.
-                  </div>
-                )}
+                    {/* Connection status */}
+                    {connectionStatus && (
+                      <div className={`text-xs flex items-start gap-2 p-2.5 rounded-md ${
+                        connectionStatus.ok
+                          ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                          : "text-red-400 bg-red-500/10 border border-red-500/20"
+                      }`} data-testid="connection-status">
+                        {connectionStatus.ok
+                          ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                          : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
+                        <div className="space-y-0.5">
+                          <div className="font-medium">{connectionStatus.message}</div>
+                          {connectionStatus.ok && models.length > 0 && (
+                            <div className="text-[11px] text-muted-foreground">{models.length} моделей доступно</div>
+                          )}
+                          {connectionStatus.ok && isCloudProvider && !currentProviderDef.supportsModelList && (
+                            <div className="text-[11px] text-muted-foreground">{currentProviderDef.modelListNote}</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
-                {/* Auto-check loading */}
-                {(settingsQuery.isLoading || autoChecking) && !connectionStatus && (
-                  <div className="text-xs text-muted-foreground flex items-center gap-2" data-testid="auto-checking-indicator">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    {settingsQuery.isLoading ? "Загрузка настроек..." : "Проверка подключения..."}
-                  </div>
+                    {/* Degraded mode info when local provider is offline (local mode only) */}
+                    {connectionStatus && !connectionStatus.ok && isLocalProvider && (
+                      <DegradedInfo providerType={form.providerType} />
+                    )}
+
+                    {/* Auto-check loading */}
+                    {(settingsQuery.isLoading || autoChecking) && !connectionStatus && (
+                      <div className="text-xs text-muted-foreground flex items-center gap-2" data-testid="auto-checking-indicator">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        {settingsQuery.isLoading ? "Загрузка настроек..." : "Проверка подключения..."}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 

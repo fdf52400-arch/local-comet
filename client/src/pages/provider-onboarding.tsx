@@ -10,10 +10,10 @@ import {
   Server, Terminal, KeyRound,
   CheckCircle2, XCircle, Loader2,
   Eye, EyeOff, ChevronRight, Info,
-  Cloud, ArrowLeft, Zap, AlertTriangle,
+  Cloud, ArrowLeft, Zap,
 } from "lucide-react";
 import type { ProviderType } from "@shared/schema";
-import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
+import { isHostedPreview, DEFAULT_OLLAMA_PORT } from "@/lib/hosting-env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,17 +74,30 @@ const CLOUD_PROVIDERS: CloudProviderDef[] = [
   },
 ];
 
-// ─── Hosted preview banner ─────────────────────────────────────────────────────
+// ─── Mode banner ──────────────────────────────────────────────────────────────
 
-function HostedPreviewBanner() {
-  if (!isHostedPreview()) return null;
+function ModeBanner() {
+  const hosted = isHostedPreview();
+  if (hosted) {
+    return (
+      <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="hosted-preview-banner">
+        <Cloud className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
+        <div className="space-y-0.5">
+          <p className="text-xs text-blue-300 font-semibold">Preview mode — только облачные API</p>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Для Ollama и LM Studio запустите приложение локально (<code className="font-mono bg-black/20 px-1 rounded">npm run dev</code>).
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="hosted-preview-banner">
-      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="local-mode-banner">
+      <Server className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
       <div className="space-y-0.5">
-        <p className="text-xs text-amber-300 font-semibold">Публичный preview — локальные модели недоступны</p>
+        <p className="text-xs text-emerald-300 font-semibold">Local mode — локальные модели доступны</p>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          {localProviderHostedNote()}
+          Ollama по умолчанию: <code className="font-mono bg-black/20 px-1 rounded">localhost:{DEFAULT_OLLAMA_PORT}</code>. Доступны также облачные API.
         </p>
       </div>
     </div>
@@ -244,24 +257,6 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
         </p>
       </div>
 
-      {/* Hosted preview warning — shown prominently for local providers */}
-      {hosted && (
-        <div className="bg-amber-500/10 border border-amber-500/35 rounded-lg p-4 flex items-start gap-3" data-testid="local-provider-hosted-warning">
-          <AlertTriangle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-1.5">
-            <p className="text-sm text-amber-300 font-semibold">Локальный провайдер в публичном preview</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Этот preview запущен на публичном сервере и <strong className="text-foreground/80">не видит ваш localhost</strong>.
-              {" "}Подключение к {label} ({baseUrl}:{port}) будет недоступно.
-            </p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Для работы с {label}: запустите приложение локально (<code className="font-mono bg-black/20 px-1 rounded">npm run dev</code>),
-              либо используйте облачный провайдер (OpenAI, Anthropic, Gemini).
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Setup command hint */}
       <div className="bg-muted/40 border border-border rounded-lg p-3 space-y-1.5">
         <div className="flex items-center gap-2 text-xs font-semibold text-foreground/80">
@@ -305,31 +300,35 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
         </p>
       </div>
 
-      {/* Check connection */}
-      <div className="space-y-2">
-        <Button
-          onClick={() => checkMutation.mutate()}
-          disabled={checkMutation.isPending}
-          variant="outline"
-          className="w-full h-11 gap-2"
-          data-testid="button-check-connection"
-        >
-          {checkMutation.isPending
-            ? <Loader2 className="h-4 w-4 animate-spin" />
-            : <Zap className="h-4 w-4" />}
-          Проверить подключение
-        </Button>
-        {connStatus && (
-          <div className="flex justify-center">
-            <ConnectionBadge status={connStatus} />
-          </div>
-        )}
-        {hosted && connStatus && typeof connStatus === "object" && !connStatus.ok && (
-          <p className="text-xs text-center text-amber-400/80">
-            Это ожидаемо — публичный preview не может достучаться до вашего localhost.
+      {/* Check connection — only available in local mode */}
+      {hosted ? (
+        <div className="bg-muted/30 border border-border rounded-lg p-3 text-center space-y-1.5" data-testid="check-disabled-hosted">
+          <p className="text-xs text-muted-foreground font-medium">Проверка недоступна в preview mode</p>
+          <p className="text-xs text-muted-foreground/70">
+            Запустите приложение локально (<code className="font-mono bg-black/20 px-1 rounded">npm run dev</code>), чтобы проверить подключение к {label}.
           </p>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <Button
+            onClick={() => checkMutation.mutate()}
+            disabled={checkMutation.isPending}
+            variant="outline"
+            className="w-full h-11 gap-2"
+            data-testid="button-check-connection"
+          >
+            {checkMutation.isPending
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Zap className="h-4 w-4" />}
+            Проверить подключение
+          </Button>
+          {connStatus && (
+            <div className="flex justify-center">
+              <ConnectionBadge status={connStatus} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Model selection — visible only after successful connection */}
       {connOk && (
@@ -701,108 +700,153 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
         </p>
       </div>
 
-      {/* Hosted preview global notice */}
-      {hosted && <HostedPreviewBanner />}
+      {/* Mode banner */}
+      <ModeBanner />
 
-      {/* 3 big action cards */}
+      {/* Action cards — differ by mode */}
       <div className="space-y-3">
-        {/* Ollama */}
-        <button
-          onClick={() => onSelect("ollama")}
-          className={`w-full group flex items-start gap-4 p-5 rounded-xl border transition-all text-left ${
-            hosted
-              ? "border-border opacity-60 cursor-pointer hover:opacity-80"
-              : "border-border hover:border-primary/50 hover:bg-primary/5"
-          }`}
-          data-testid="button-onboarding-ollama"
-        >
-          <div className={`mt-0.5 h-10 w-10 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
-            hosted ? "bg-muted/50" : "bg-primary/10 group-hover:bg-primary/15"
-          }`}>
-            <Server className={`h-5 w-5 ${hosted ? "text-muted-foreground" : "text-primary"}`} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-base font-semibold">Подключить Ollama</span>
-              {hosted
-                ? <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30 bg-amber-500/5">Только локально</Badge>
-                : <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
-              }
-            </div>
-            <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
-              Открытый движок для локальных моделей. Быстрый старт, работает без интернета.
-            </p>
-            <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:11434</p>
-            {hosted && (
-              <p className="text-xs text-amber-400/70 mt-1">Требует локального запуска приложения</p>
-            )}
-          </div>
-          <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
-        </button>
+        {hosted ? (
+          // ── Preview mode: only API key is the active path; local options are info-only ──
+          <>
+            {/* API Key — primary/only active option in preview */}
+            <button
+              onClick={() => onSelect("apikey")}
+              className="w-full group flex items-start gap-4 p-5 rounded-xl border border-primary/40 bg-primary/5 hover:border-primary/60 hover:bg-primary/10 transition-all text-left"
+              data-testid="button-onboarding-apikey"
+            >
+              <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/15 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
+                <KeyRound className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">Вставить API key</span>
+                  <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
+                  OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
+                </p>
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
+                    <span key={p} className="text-[10px] bg-muted/50 border border-border/50 rounded px-1.5 py-0.5 text-muted-foreground/70">
+                      {p}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-primary/60 shrink-0 mt-2.5 group-hover:text-primary transition-colors" />
+            </button>
 
-        {/* LM Studio */}
-        <button
-          onClick={() => onSelect("lmstudio")}
-          className={`w-full group flex items-start gap-4 p-5 rounded-xl border transition-all text-left ${
-            hosted
-              ? "border-border opacity-60 cursor-pointer hover:opacity-80"
-              : "border-border hover:border-primary/50 hover:bg-primary/5"
-          }`}
-          data-testid="button-onboarding-lmstudio"
-        >
-          <div className={`mt-0.5 h-10 w-10 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
-            hosted ? "bg-muted/50" : "bg-primary/10 group-hover:bg-primary/15"
-          }`}>
-            <Terminal className={`h-5 w-5 ${hosted ? "text-muted-foreground" : "text-primary"}`} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-base font-semibold">Подключить LM Studio</span>
-              {hosted && (
-                <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30 bg-amber-500/5">Только локально</Badge>
-              )}
+            {/* Local providers — disabled info block, no CTA */}
+            <div className="rounded-xl border border-border/40 bg-muted/20 p-4" data-testid="local-providers-disabled">
+              <p className="text-xs text-muted-foreground/70 font-semibold mb-3 uppercase tracking-wider">Локальные провайдеры — только в local mode</p>
+              <div className="space-y-2">
+                {/* Ollama info */}
+                <div className="flex items-center gap-3 opacity-50">
+                  <div className="h-8 w-8 rounded-md bg-muted/60 flex items-center justify-center shrink-0">
+                    <Server className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">Ollama</span>
+                      <span className="text-[10px] text-muted-foreground/60 font-mono">localhost:{DEFAULT_OLLAMA_PORT}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground/60">Открытый движок, локальные модели</p>
+                  </div>
+                </div>
+                {/* LM Studio info */}
+                <div className="flex items-center gap-3 opacity-50">
+                  <div className="h-8 w-8 rounded-md bg-muted/60 flex items-center justify-center shrink-0">
+                    <Terminal className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">LM Studio</span>
+                      <span className="text-[10px] text-muted-foreground/60 font-mono">localhost:1234</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground/60">GUI + OpenAI-совместимый API</p>
+                  </div>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground/50 mt-3">
+                Доступны после запуска приложения локально: <code className="font-mono">npm run dev</code>
+              </p>
             </div>
-            <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
-              GUI-приложение с OpenAI-совместимым API. Удобно для скачивания и тестирования моделей.
-            </p>
-            <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:1234</p>
-            {hosted && (
-              <p className="text-xs text-amber-400/70 mt-1">Требует локального запуска приложения</p>
-            )}
-          </div>
-          <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
-        </button>
+          </>
+        ) : (
+          // ── Local mode: all three options are active ──
+          <>
+            {/* Ollama */}
+            <button
+              onClick={() => onSelect("ollama")}
+              className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
+              data-testid="button-onboarding-ollama"
+            >
+              <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+                <Server className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">Подключить Ollama</span>
+                  <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
+                  Открытый движок для локальных моделей. Быстрый старт, работает без интернета.
+                </p>
+                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:{DEFAULT_OLLAMA_PORT}</p>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
+            </button>
 
-        {/* API Key */}
-        <button
-          onClick={() => onSelect("apikey")}
-          className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
-          data-testid="button-onboarding-apikey"
-        >
-          <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
-            <KeyRound className="h-5 w-5 text-primary" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-base font-semibold">Вставить API key</span>
-              <Badge variant="outline" className="text-[10px] text-blue-400 border-blue-500/30 bg-blue-500/5">Облако</Badge>
-              {hosted && (
-                <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
-              OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
-            </p>
-            <div className="flex flex-wrap gap-1 mt-2">
-              {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
-                <span key={p} className="text-[10px] bg-muted/50 border border-border/50 rounded px-1.5 py-0.5 text-muted-foreground/70">
-                  {p}
-                </span>
-              ))}
-            </div>
-          </div>
-          <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
-        </button>
+            {/* LM Studio */}
+            <button
+              onClick={() => onSelect("lmstudio")}
+              className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
+              data-testid="button-onboarding-lmstudio"
+            >
+              <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+                <Terminal className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">Подключить LM Studio</span>
+                </div>
+                <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
+                  GUI-приложение с OpenAI-совместимым API. Удобно для скачивания и тестирования моделей.
+                </p>
+                <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:1234</p>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
+            </button>
+
+            {/* API Key */}
+            <button
+              onClick={() => onSelect("apikey")}
+              className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
+              data-testid="button-onboarding-apikey"
+            >
+              <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+                <KeyRound className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">Вставить API key</span>
+                  <Badge variant="outline" className="text-[10px] text-blue-400 border-blue-500/30 bg-blue-500/5">Облако</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
+                  OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
+                </p>
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
+                    <span key={p} className="text-[10px] bg-muted/50 border border-border/50 rounded px-1.5 py-0.5 text-muted-foreground/70">
+                      {p}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
+            </button>
+          </>
+        )}
       </div>
 
       {/* Skip hint */}
@@ -839,7 +883,7 @@ export default function ProviderOnboarding({ onComplete }: ProviderOnboardingPro
           <LocalProviderSetup
             providerType="ollama"
             label="Ollama"
-            defaultPort={11434}
+            defaultPort={DEFAULT_OLLAMA_PORT}
             setupCmd="ollama serve"
             onBack={() => setStep("choose")}
             onSaved={onComplete}

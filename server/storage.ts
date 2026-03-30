@@ -25,7 +25,7 @@ function migrate() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_type TEXT NOT NULL DEFAULT 'ollama',
       base_url TEXT NOT NULL DEFAULT 'http://localhost',
-      port INTEGER NOT NULL DEFAULT 11434,
+      port INTEGER NOT NULL DEFAULT 11436,
       model TEXT NOT NULL DEFAULT '',
       api_key TEXT NOT NULL DEFAULT '',
       temperature TEXT NOT NULL DEFAULT '0.7',
