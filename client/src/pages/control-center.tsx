@@ -37,7 +37,8 @@ import { useTheme } from "@/lib/theme";
 import { Link } from "wouter";
 import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
-import { LOCAL_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
+import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
+import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -445,14 +446,14 @@ function ModelSettingsCollapsible() {
 
   const checkMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/providers/check", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port });
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port, apiKey: form.apiKey, model: form.model });
       return res.json();
     },
   });
 
   const modelsMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/providers/models", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port });
+      const res = await apiRequest("POST", "/api/providers/models", { providerType: form.providerType, baseUrl: form.baseUrl, port: form.port, apiKey: form.apiKey, model: form.model });
       return res.json();
     },
     onSuccess: (data) => {
@@ -541,11 +542,18 @@ function ModelSettingsCollapsible() {
                 </button>
               ))}
             </div>
-            {/* Config-only notice */}
+            {/* Honest cloud provider status */}
             {!isLocal && (
               <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-blue-400/80 bg-blue-500/8 border border-blue-500/20 rounded px-2 py-1.5">
                 <span className="shrink-0">ℹ</span>
-                <span>Конфигурация сохраняется. Агент пока работает только через Ollama / LM Studio.</span>
+                <span>Облачный API — проверьте ключ кнопкой «Проверить». Агент использует этот провайдер для чата.</span>
+              </div>
+            )}
+            {/* Hosted preview warning for local providers */}
+            {isLocal && isHostedPreview() && (
+              <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-amber-400/80 bg-amber-500/8 border border-amber-500/25 rounded px-2 py-1.5">
+                <span className="shrink-0">⚠</span>
+                <span>Публичный preview — localhost недоступен. Используйте облачный провайдер.</span>
               </div>
             )}
           </div>
@@ -642,31 +650,33 @@ function ModelSettingsCollapsible() {
             </Select>
           </div>
 
-          {/* Action buttons */}
+          {/* Action buttons — available for all providers */}
           <div className="flex gap-1.5">
-            {isLocal && (
-              <>
-                <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending} data-testid="button-check-connection">
-                  {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-                  Проверить
-                </Button>
-                <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending} data-testid="button-get-models">
-                  {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                  Модели
-                </Button>
-              </>
-            )}
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => checkMutation.mutate()} disabled={checkMutation.isPending || (!isLocal && !form.apiKey.trim())} data-testid="button-check-connection">
+              {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+              Проверить
+            </Button>
+            <Button variant="outline" size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => modelsMutation.mutate()} disabled={modelsMutation.isPending || (!isLocal && !form.apiKey.trim())} data-testid="button-get-models">
+              {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              Модели
+            </Button>
             <Button size="sm" className="flex-1 h-7 text-[11px] gap-1" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} data-testid="button-save-settings">
               {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
               Сохранить
             </Button>
           </div>
 
-          {/* Status message (local providers only) */}
-          {checkMutation.data && isLocal && (
+          {/* Status message — shown for all providers */}
+          {checkMutation.data && (
             <div className={`text-[11px] flex items-center gap-1.5 px-2 py-1.5 rounded-md ${checkMutation.data.ok ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
               {checkMutation.data.ok ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
               <span>{checkMutation.data.message}</span>
+            </div>
+          )}
+          {/* Hosted preview explanation for failed local check */}
+          {checkMutation.data && !checkMutation.data.ok && isLocal && isHostedPreview() && (
+            <div className="text-[10px] text-amber-400/70 px-2">
+              Это ожидаемо — публичный preview не видит ваш localhost.
             </div>
           )}
         </div>
@@ -1014,13 +1024,15 @@ function ProviderConnectBlock() {
   useEffect(() => {
     if (!settingsQuery.data) return;
     const s = settingsQuery.data;
-    // Only check for local providers
-    if (!LOCAL_PROVIDERS.includes(s.providerType)) return;
+    // For local providers in hosted preview, skip auto-check (it will always fail)
+    if (LOCAL_PROVIDERS.includes(s.providerType) && isHostedPreview()) return;
     setProvStatus(prev => ({ ...prev, checking: true }));
     apiRequest("POST", "/api/providers/check", {
       providerType: s.providerType || "ollama",
       baseUrl: s.baseUrl || "http://localhost",
       port: s.port || 11434,
+      apiKey: s.apiKey || "",
+      model: s.model || "",
     })
       .then(r => r.json())
       .then(d => setProvStatus({ ok: !!d.ok, checked: true, checking: false }))
@@ -1101,22 +1113,37 @@ function ProviderConnectBlock() {
 
         {/* Provider options hint when not configured */}
         {!settings?.model && !settingsQuery.isLoading && (
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            {[
-              { label: "Ollama", hint: "localhost:11434", local: true },
-              { label: "LM Studio", hint: "localhost:1234", local: true },
-              { label: "API Key", hint: "OpenAI / Claude / Gemini", local: false },
-            ].map(opt => (
-              <Link key={opt.label} href="/settings">
-                <div
-                  className="border border-border/50 hover:border-primary/40 hover:bg-primary/5 rounded-lg p-2 text-center transition-colors cursor-pointer"
-                  data-testid={`card-provider-hint-${opt.label.toLowerCase().replace(' ', '-')}`}
-                >
-                  <div className="text-xs font-semibold">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">{opt.hint}</div>
-                </div>
-              </Link>
-            ))}
+          <div className="mt-3 space-y-2">
+            {isHostedPreview() && (
+              <div className="text-[10px] text-amber-400/80 bg-amber-500/8 border border-amber-500/20 rounded px-2 py-1.5 flex items-start gap-1.5">
+                <span className="shrink-0">⚠</span>
+                <span>Публичный preview — Ollama/LM Studio требуют локального запуска. Рекомендуется API Key.</span>
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: "Ollama", hint: "localhost:11434", local: true },
+                { label: "LM Studio", hint: "localhost:1234", local: true },
+                { label: "API Key", hint: "OpenAI / Claude / Gemini", local: false },
+              ].map(opt => (
+                <Link key={opt.label} href="/settings">
+                  <div
+                    className={`border rounded-lg p-2 text-center transition-colors cursor-pointer ${
+                      opt.local && isHostedPreview()
+                        ? "border-border/30 opacity-50 hover:opacity-70"
+                        : "border-border/50 hover:border-primary/40 hover:bg-primary/5"
+                    }`}
+                    data-testid={`card-provider-hint-${opt.label.toLowerCase().replace(' ', '-')}`}
+                  >
+                    <div className="text-xs font-semibold">{opt.label}</div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">{opt.hint}</div>
+                    {opt.local && isHostedPreview() && (
+                      <div className="text-[9px] text-amber-400/60 mt-0.5">только локально</div>
+                    )}
+                  </div>
+                </Link>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -1223,8 +1250,10 @@ export default function ControlCenter() {
   useEffect(() => {
     if (!settingsQuery.data) return;
     const s = settingsQuery.data;
+    // Skip auto-check for local providers in hosted preview
+    if (LOCAL_PROVIDERS.includes(s.providerType) && isHostedPreview()) return;
     setProviderStatus(prev => ({ ...prev, checking: true }));
-    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || 11434 })
+    apiRequest("POST", "/api/providers/check", { providerType: s.providerType || "ollama", baseUrl: s.baseUrl || "http://localhost", port: s.port || 11434, apiKey: s.apiKey || "", model: s.model || "" })
       .then(r => r.json())
       .then(d => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }))
       .catch(() => setProviderStatus({ ok: false, checked: true, checking: false }));
@@ -1234,7 +1263,7 @@ export default function ControlCenter() {
   const checkMutation = useMutation({
     mutationFn: async () => {
       const s = settingsQuery.data;
-      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || 11434 });
+      const res = await apiRequest("POST", "/api/providers/check", { providerType: s?.providerType || "ollama", baseUrl: s?.baseUrl || "http://localhost", port: s?.port || 11434, apiKey: s?.apiKey || "", model: s?.model || "" });
       return res.json();
     },
     onSuccess: (d) => setProviderStatus({ ok: !!d.ok, checked: true, checking: false }),

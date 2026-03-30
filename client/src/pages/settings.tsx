@@ -16,7 +16,8 @@ import {
   ExternalLink, AlertTriangle,
 } from "lucide-react";
 import { Link } from "wouter";
-import { LOCAL_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
+import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, type ProviderType } from "@shared/schema";
+import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
 
 // ─── Provider definitions ─────────────────────────────────────────────────────
 
@@ -31,9 +32,11 @@ interface ProviderDef {
   hasApiKey: boolean;
   hasBaseUrl: boolean;
   modelPlaceholder: string;
-  supported: "full" | "config_only";
-  supportedNote?: string;
+  category: "local" | "cloud";
   setupCmd?: string;
+  keyDocsUrl?: string;
+  supportsModelList: boolean;
+  modelListNote?: string;
 }
 
 const PROVIDER_DEFS: ProviderDef[] = [
@@ -48,8 +51,9 @@ const PROVIDER_DEFS: ProviderDef[] = [
     hasApiKey: false,
     hasBaseUrl: true,
     modelPlaceholder: "llama3.2, mistral, gemma2…",
-    supported: "full",
+    category: "local",
     setupCmd: "ollama serve",
+    supportsModelList: true,
   },
   {
     id: "lmstudio",
@@ -62,22 +66,9 @@ const PROVIDER_DEFS: ProviderDef[] = [
     hasApiKey: false,
     hasBaseUrl: true,
     modelPlaceholder: "local-model",
-    supported: "full",
+    category: "local",
     setupCmd: "LM Studio → Developer tab → Start Server",
-  },
-  {
-    id: "openai_compatible",
-    label: "OpenAI Compatible",
-    icon: Cloud,
-    description: "Любой сервер с OpenAI-совместимым API (vLLM, LiteLLM, Jan, …)",
-    defaultBaseUrl: "http://localhost",
-    defaultPort: 8080,
-    hasPort: true,
-    hasApiKey: true,
-    hasBaseUrl: true,
-    modelPlaceholder: "gpt-3.5-turbo, custom-model…",
-    supported: "config_only",
-    supportedNote: "Конфигурация сохраняется. Агент пока работает только через Ollama / LM Studio.",
+    supportsModelList: true,
   },
   {
     id: "openai",
@@ -90,8 +81,9 @@ const PROVIDER_DEFS: ProviderDef[] = [
     hasApiKey: true,
     hasBaseUrl: false,
     modelPlaceholder: "gpt-4o, gpt-4-turbo, gpt-3.5-turbo…",
-    supported: "config_only",
-    supportedNote: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    category: "cloud",
+    keyDocsUrl: "https://platform.openai.com/api-keys",
+    supportsModelList: true,
   },
   {
     id: "anthropic",
@@ -104,8 +96,10 @@ const PROVIDER_DEFS: ProviderDef[] = [
     hasApiKey: true,
     hasBaseUrl: false,
     modelPlaceholder: "claude-3-5-sonnet-20241022, claude-3-haiku…",
-    supported: "config_only",
-    supportedNote: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    category: "cloud",
+    keyDocsUrl: "https://console.anthropic.com/settings/keys",
+    supportsModelList: false,
+    modelListNote: "Anthropic не предоставляет публичный список моделей через API. Введите название вручную.",
   },
   {
     id: "gemini",
@@ -118,10 +112,42 @@ const PROVIDER_DEFS: ProviderDef[] = [
     hasApiKey: true,
     hasBaseUrl: false,
     modelPlaceholder: "gemini-1.5-pro, gemini-1.5-flash…",
-    supported: "config_only",
-    supportedNote: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    category: "cloud",
+    keyDocsUrl: "https://aistudio.google.com/app/apikey",
+    supportsModelList: true,
+  },
+  {
+    id: "openai_compatible",
+    label: "OpenAI Compatible",
+    icon: Cloud,
+    description: "Любой сервер с OpenAI-совместимым API (vLLM, LiteLLM, Jan, …)",
+    defaultBaseUrl: "http://localhost",
+    defaultPort: 8080,
+    hasPort: true,
+    hasApiKey: true,
+    hasBaseUrl: true,
+    modelPlaceholder: "gpt-3.5-turbo, custom-model…",
+    category: "cloud",
+    supportsModelList: true,
+    modelListNote: "Список моделей загружается с вашего сервера (/v1/models).",
   },
 ];
+
+// ─── Hosted preview warning for local providers ───────────────────────────────
+function LocalProviderHostedWarning({ providerLabel }: { providerLabel: string }) {
+  if (!isHostedPreview()) return null;
+  return (
+    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="local-provider-hosted-warning">
+      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+      <div className="space-y-1">
+        <p className="text-xs text-amber-300 font-semibold">Локальный провайдер в публичном preview</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {localProviderHostedNote()}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 // ─── Degraded-mode info box ───────────────────────────────────────────────────
 function DegradedInfo({ providerType }: { providerType: string }) {
@@ -151,19 +177,6 @@ function DegradedInfo({ providerType }: { providerType: string }) {
   );
 }
 
-// ─── Config-only notice ───────────────────────────────────────────────────────
-function ConfigOnlyNotice({ note }: { note: string }) {
-  return (
-    <div className="bg-blue-500/8 border border-blue-500/25 rounded-lg p-3 flex items-start gap-2" data-testid="config-only-notice">
-      <Info className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
-      <div className="space-y-1">
-        <p className="text-xs text-blue-300 font-semibold">Конфигурация сохраняется, чат пока недоступен</p>
-        <p className="text-xs text-muted-foreground leading-relaxed">{note}</p>
-      </div>
-    </div>
-  );
-}
-
 // ─── Model list component ─────────────────────────────────────────────────────
 function ModelList({ models, selected, onChange }: {
   models: string[];
@@ -189,17 +202,31 @@ function ModelList({ models, selected, onChange }: {
 }
 
 // ─── API Key input with show/hide ──────────────────────────────────────────────
-function ApiKeyInput({ value, onChange, label = "API Key" }: {
+function ApiKeyInput({ value, onChange, label = "API Key", docsUrl }: {
   value: string;
   onChange: (v: string) => void;
   label?: string;
+  docsUrl?: string;
 }) {
   const [show, setShow] = useState(false);
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs text-foreground/80 flex items-center gap-1.5">
-        <KeyRound className="h-3 w-3" />
-        {label}
+      <Label className="text-xs text-foreground/80 flex items-center justify-between">
+        <span className="flex items-center gap-1.5">
+          <KeyRound className="h-3 w-3" />
+          {label}
+        </span>
+        {docsUrl && (
+          <a
+            href={docsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-primary hover:underline flex items-center gap-1"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Где взять ключ?
+          </a>
+        )}
       </Label>
       <div className="relative">
         <Input
@@ -255,6 +282,7 @@ export default function SettingsPage() {
 
   const currentProviderDef = PROVIDER_DEFS.find(p => p.id === form.providerType) ?? PROVIDER_DEFS[0];
   const isLocalProvider = LOCAL_PROVIDERS.includes(form.providerType as any);
+  const isCloudProvider = CLOUD_PROVIDERS.includes(form.providerType as any);
 
   useEffect(() => {
     if (settingsQuery.data && settingsQuery.data.providerType) {
@@ -269,8 +297,8 @@ export default function SettingsPage() {
         maxTokens: d.maxTokens || 2048,
         safetyMode: d.safetyMode || "readonly",
       });
-      // Auto-check silently on first settings load (only for local providers)
-      if (!autoChecked && LOCAL_PROVIDERS.includes(d.providerType)) {
+      // Auto-check silently on first load for local providers only (not in hosted preview)
+      if (!autoChecked && LOCAL_PROVIDERS.includes(d.providerType) && !isHostedPreview()) {
         setAutoChecked(true);
         setAutoChecking(true);
         setTimeout(async () => {
@@ -279,6 +307,7 @@ export default function SettingsPage() {
               providerType: d.providerType || "ollama",
               baseUrl: d.baseUrl || "http://localhost",
               port: d.port || 11434,
+              apiKey: "",
             });
             const result = await res.json();
             setConnectionStatus(result);
@@ -288,6 +317,7 @@ export default function SettingsPage() {
                 providerType: d.providerType || "ollama",
                 baseUrl: d.baseUrl || "http://localhost",
                 port: d.port || 11434,
+                apiKey: "",
               });
               const mData = await mRes.json();
               if (mData.models?.length > 0) setModels(mData.models);
@@ -317,13 +347,15 @@ export default function SettingsPage() {
     setModels([]);
   }, [form.providerType]);
 
-  // Manual check — only for local providers
+  // Check connection — works for both local AND cloud providers
   const checkMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/providers/check", {
         providerType: form.providerType,
         baseUrl: form.baseUrl,
         port: form.port,
+        apiKey: form.apiKey,
+        model: form.model,
       });
       return res.json();
     },
@@ -345,6 +377,8 @@ export default function SettingsPage() {
         providerType: form.providerType,
         baseUrl: form.baseUrl,
         port: form.port,
+        apiKey: form.apiKey,
+        model: form.model,
       });
       return res.json();
     },
@@ -419,7 +453,7 @@ export default function SettingsPage() {
               Проверка…
             </Badge>
           )}
-          {connectionStatus && isLocalProvider && (
+          {connectionStatus && (
             <Badge
               variant="outline"
               className={`text-[10px] gap-1 ${connectionStatus.ok ? "text-emerald-500 border-emerald-500/30" : "text-red-400 border-red-500/30"}`}
@@ -429,12 +463,6 @@ export default function SettingsPage() {
                 ? <CheckCircle2 className="h-2.5 w-2.5" />
                 : <XCircle className="h-2.5 w-2.5" />}
               {providerLabel} {connectionStatus.ok ? "подключен" : "недоступен"}
-            </Badge>
-          )}
-          {!isLocalProvider && (
-            <Badge variant="outline" className="text-[10px] gap-1 text-blue-400 border-blue-500/30" data-testid="badge-config-only">
-              <Info className="h-2.5 w-2.5" />
-              Только конфигурация
             </Badge>
           )}
           <Button
@@ -462,13 +490,20 @@ export default function SettingsPage() {
 
             {/* Local providers */}
             <div className="mb-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/60 font-semibold mb-2">
-                Локальные (рекомендуется)
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/60 font-semibold mb-2 flex items-center gap-2">
+                Локальные
+                {isHostedPreview() && (
+                  <span className="normal-case text-[10px] font-normal text-amber-400/70">— недоступны в публичном preview</span>
+                )}
+                {!isHostedPreview() && (
+                  <span className="normal-case text-[10px] font-normal text-muted-foreground/50">— рекомендуется</span>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {PROVIDER_DEFS.filter(p => p.supported === "full").map(p => {
+                {PROVIDER_DEFS.filter(p => p.category === "local").map(p => {
                   const Icon = p.icon;
                   const isSelected = form.providerType === p.id;
+                  const dimmed = isHostedPreview();
                   return (
                     <button
                       key={p.id}
@@ -477,7 +512,7 @@ export default function SettingsPage() {
                         isSelected
                           ? "border-primary bg-primary/10"
                           : "border-border hover:border-muted-foreground/40 hover:bg-accent/30"
-                      }`}
+                      } ${dimmed ? "opacity-60" : ""}`}
                       data-testid={`button-provider-${p.id}`}
                     >
                       <div className="flex items-center gap-2">
@@ -497,14 +532,14 @@ export default function SettingsPage() {
 
             {/* Cloud / API providers */}
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/60 font-semibold mb-2 mt-3">
-                Облачные API{" "}
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/60 font-semibold mb-2 mt-3 flex items-center gap-2">
+                Облачные API
                 <span className="normal-case text-[10px] font-normal text-muted-foreground/50">
-                  — конфигурация сохраняется, чат с агентом пока недоступен
+                  — проверка и чат через API ключ
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {PROVIDER_DEFS.filter(p => p.supported === "config_only").map(p => {
+                {PROVIDER_DEFS.filter(p => p.category === "cloud").map(p => {
                   const Icon = p.icon;
                   const isSelected = form.providerType === p.id;
                   return (
@@ -531,9 +566,9 @@ export default function SettingsPage() {
             </div>
           </Card>
 
-          {/* ── Config-only notice ──────────────────────────────────────── */}
-          {!isLocalProvider && currentProviderDef.supportedNote && (
-            <ConfigOnlyNotice note={currentProviderDef.supportedNote} />
+          {/* ── Hosted warning for local providers ──────────────────────── */}
+          {isLocalProvider && (
+            <LocalProviderHostedWarning providerLabel={currentProviderDef.label} />
           )}
 
           {/* ── Connection / Endpoint ───────────────────────────────────── */}
@@ -584,70 +619,85 @@ export default function SettingsPage() {
                   value={form.apiKey}
                   onChange={v => setForm(f => ({ ...f, apiKey: v }))}
                   label={`API Key для ${currentProviderDef.label}`}
+                  docsUrl={currentProviderDef.keyDocsUrl}
                 />
               )}
 
-              {/* Connection check buttons (only for local providers) */}
-              {isLocalProvider && (
-                <>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => checkMutation.mutate()}
-                      disabled={checkMutation.isPending}
-                      className="gap-2 text-xs"
-                      data-testid="button-check-connection"
-                    >
-                      {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-                      Проверить подключение
-                    </Button>
+              {/* Connection check buttons — for ALL providers */}
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => checkMutation.mutate()}
+                    disabled={checkMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
+                    className="gap-2 text-xs"
+                    data-testid="button-check-connection"
+                  >
+                    {checkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                    Проверить подключение
+                  </Button>
+                  {currentProviderDef.supportsModelList && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={handleLoadModels}
-                      disabled={modelsMutation.isPending}
+                      disabled={modelsMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
                       className="gap-2 text-xs"
                       data-testid="button-load-models"
                     >
                       {modelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                       Загрузить модели
                     </Button>
+                  )}
+                </div>
+
+                {isCloudProvider && !form.apiKey.trim() && (
+                  <p className="text-[11px] text-muted-foreground">Введите API key для проверки подключения</p>
+                )}
+
+                {/* Connection status */}
+                {connectionStatus && (
+                  <div className={`text-xs flex items-start gap-2 p-2.5 rounded-md ${
+                    connectionStatus.ok
+                      ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                      : "text-red-400 bg-red-500/10 border border-red-500/20"
+                  }`} data-testid="connection-status">
+                    {connectionStatus.ok
+                      ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
+                    <div className="space-y-0.5">
+                      <div className="font-medium">{connectionStatus.message}</div>
+                      {connectionStatus.ok && models.length > 0 && (
+                        <div className="text-[11px] text-muted-foreground">{models.length} моделей доступно</div>
+                      )}
+                      {connectionStatus.ok && isCloudProvider && !currentProviderDef.supportsModelList && (
+                        <div className="text-[11px] text-muted-foreground">{currentProviderDef.modelListNote}</div>
+                      )}
+                    </div>
                   </div>
+                )}
 
-                  {/* Connection status */}
-                  {connectionStatus && (
-                    <div className={`text-xs flex items-start gap-2 p-2.5 rounded-md ${
-                      connectionStatus.ok
-                        ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
-                        : "text-red-400 bg-red-500/10 border border-red-500/20"
-                    }`} data-testid="connection-status">
-                      {connectionStatus.ok
-                        ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                        : <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
-                      <div className="space-y-0.5">
-                        <div className="font-medium">{connectionStatus.message}</div>
-                        {connectionStatus.ok && models.length > 0 && (
-                          <div className="text-[11px] text-muted-foreground">{models.length} моделей доступно</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
+                {/* Degraded mode info when local provider is offline */}
+                {connectionStatus && !connectionStatus.ok && isLocalProvider && (
+                  <DegradedInfo providerType={form.providerType} />
+                )}
 
-                  {/* Degraded mode info when provider is offline */}
-                  {connectionStatus && !connectionStatus.ok && (
-                    <DegradedInfo providerType={form.providerType} />
-                  )}
+                {/* Hosted preview check result explanation */}
+                {connectionStatus && !connectionStatus.ok && isLocalProvider && isHostedPreview() && (
+                  <div className="text-[11px] text-amber-400/80 bg-amber-500/8 border border-amber-500/20 rounded-md p-2.5">
+                    Это ожидаемо — публичный preview не может достучаться до вашего localhost.
+                  </div>
+                )}
 
-                  {/* Auto-check loading */}
-                  {(settingsQuery.isLoading || autoChecking) && !connectionStatus && (
-                    <div className="text-xs text-muted-foreground flex items-center gap-2" data-testid="auto-checking-indicator">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      {settingsQuery.isLoading ? "Загрузка настроек..." : "Проверка подключения..."}
-                    </div>
-                  )}
-                </>
-              )}
+                {/* Auto-check loading */}
+                {(settingsQuery.isLoading || autoChecking) && !connectionStatus && (
+                  <div className="text-xs text-muted-foreground flex items-center gap-2" data-testid="auto-checking-indicator">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {settingsQuery.isLoading ? "Загрузка настроек..." : "Проверка подключения..."}
+                  </div>
+                )}
+              </div>
 
               {/* Setup hint for local providers when no status yet */}
               {isLocalProvider && !connectionStatus && !autoChecking && currentProviderDef.setupCmd && (
@@ -678,7 +728,10 @@ export default function SettingsPage() {
                   <p className="text-[11px] text-muted-foreground mt-1">
                     {isLocalProvider
                       ? "Нажмите «Загрузить модели» для автоопределения или введите вручную"
-                      : "Введите точное название модели из документации провайдера"}
+                      : currentProviderDef.supportsModelList
+                        ? "Нажмите «Загрузить модели» после проверки ключа, или введите вручную"
+                        : currentProviderDef.modelListNote ?? "Введите точное название модели из документации провайдера"
+                    }
                   </p>
                 </div>
               )}
@@ -710,12 +763,12 @@ export default function SettingsPage() {
                 />
               </div>
 
-              {form.model && isLocalProvider && (
+              {form.model && (
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => testMutation.mutate()}
-                  disabled={testMutation.isPending}
+                  disabled={testMutation.isPending || (isCloudProvider && !form.apiKey.trim())}
                   className="gap-2 text-xs"
                   data-testid="button-test-chat"
                 >

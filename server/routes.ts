@@ -87,6 +87,7 @@ export async function registerRoutes(
             baseUrl: settings.baseUrl,
             port: settings.port,
             model: settings.model,
+            apiKey: settings.apiKey || "",
             temperature: parseFloat(settings.temperature),
             maxTokens: settings.maxTokens,
           });
@@ -176,12 +177,13 @@ export async function registerRoutes(
   // ---- Provider: check ----
   app.post("/api/providers/check", async (req, res) => {
     try {
-      const { providerType, baseUrl, port } = req.body;
+      const { providerType, baseUrl, port, apiKey, model } = req.body;
       const result = await checkProvider({
         providerType: providerType || "ollama",
         baseUrl: baseUrl || "http://localhost",
         port: port || 11434,
-        model: "",
+        model: model || "",
+        apiKey: apiKey || "",
         temperature: 0.7,
         maxTokens: 2048,
       });
@@ -194,12 +196,13 @@ export async function registerRoutes(
   // ---- Provider: models ----
   app.post("/api/providers/models", async (req, res) => {
     try {
-      const { providerType, baseUrl, port } = req.body;
+      const { providerType, baseUrl, port, apiKey, model } = req.body;
       const models = await listModels({
         providerType: providerType || "ollama",
         baseUrl: baseUrl || "http://localhost",
         port: port || 11434,
-        model: "",
+        model: model || "",
+        apiKey: apiKey || "",
         temperature: 0.7,
         maxTokens: 2048,
       });
@@ -212,13 +215,14 @@ export async function registerRoutes(
   // ---- Chat: test ----
   app.post("/api/chat/test", async (req, res) => {
     try {
-      const { providerType, baseUrl, port, model, temperature, maxTokens } = req.body;
+      const { providerType, baseUrl, port, model, apiKey, temperature, maxTokens } = req.body;
       const response = await chat(
         {
           providerType: providerType || "ollama",
           baseUrl: baseUrl || "http://localhost",
           port: port || 11434,
           model: model || "",
+          apiKey: apiKey || "",
           temperature: parseFloat(temperature) || 0.7,
           maxTokens: parseInt(maxTokens) || 2048,
         },
@@ -443,6 +447,7 @@ export async function registerRoutes(
             baseUrl: settings.baseUrl,
             port: settings.port,
             model: settings.model,
+            apiKey: settings.apiKey || "",
             temperature: parseFloat(settings.temperature),
             maxTokens: settings.maxTokens,
           },
@@ -504,6 +509,7 @@ export async function registerRoutes(
           baseUrl: settings.baseUrl,
           port: settings.port,
           model: settings.model,
+          apiKey: settings.apiKey || "",
           temperature: parseFloat(settings.temperature),
           maxTokens: settings.maxTokens,
         };
@@ -942,6 +948,7 @@ export async function registerRoutes(
           baseUrl: settings.baseUrl,
           port: settings.port,
           model: settings.model,
+          apiKey: settings.apiKey || "",
           temperature: parseFloat(settings.temperature),
           maxTokens: settings.maxTokens,
         };
@@ -1189,6 +1196,7 @@ export async function registerRoutes(
           baseUrl: settings.baseUrl,
           port: settings.port,
           model: settings.model,
+          apiKey: settings.apiKey || "",
           temperature: parseFloat(settings.temperature),
           maxTokens: settings.maxTokens,
         };
@@ -1345,6 +1353,7 @@ export async function registerRoutes(
             baseUrl: settings.baseUrl,
             port: settings.port,
             model: settings.model,
+            apiKey: settings.apiKey || "",
             temperature: parseFloat(settings.temperature) || 0.7,
             maxTokens: Math.min(settings.maxTokens, 800),
           };

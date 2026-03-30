@@ -1,10 +1,11 @@
 /**
  * Local Comet — Provider Gateway
  *
- * Adapters for Ollama and LM Studio local model providers.
+ * Adapters for local (Ollama, LM Studio) and cloud (OpenAI, Anthropic, Gemini,
+ * OpenAI-compatible) model providers.
  * Provides unified interface for health check, model listing, and chat.
  *
- * URL normalisation rules:
+ * URL normalisation rules (local providers):
  *   - Strip trailing slashes from baseUrl.
  *   - If baseUrl already contains a port (host:PORT), do NOT append port again.
  *   - Otherwise append :port.
@@ -27,6 +28,7 @@ interface ProviderConfig {
   baseUrl: string;
   port: number;
   model: string;
+  apiKey: string;
   temperature: number;
   maxTokens: number;
 }
@@ -44,25 +46,14 @@ interface ChatResponse {
 }
 
 /**
- * Build the effective base URL for a provider.
- *
- * Handles four cases:
- *   1. baseUrl is just a scheme+host with no port  → append :port
- *   2. baseUrl already has a port                  → use as-is
- *   3. baseUrl already contains :port that matches → use as-is
- *   4. baseUrl contains a different explicit port  → trust the explicit port (user override)
+ * Build the effective base URL for a local provider.
  */
 function buildBaseUrl(config: ProviderConfig): string {
   const base = config.baseUrl.replace(/\/+$/, ""); // strip trailing slashes
-
-  // Parse whether the URL already contains an explicit port segment
-  // e.g. "http://localhost:11434" or "http://192.168.1.1:8080"
   const portInUrl = base.match(/:[0-9]+$/);
   if (portInUrl) {
-    // URL already has an explicit port — respect it, don't double-append
     return base;
   }
-
   return `${base}:${config.port}`;
 }
 
@@ -101,7 +92,6 @@ async function ollamaCheck(config: ProviderConfig): Promise<ProviderCheckResult>
     if (err.name === "AbortError") {
       return { ok: false, status: "timeout", message: `Ollama (${base}): таймаут подключения` };
     }
-    // Node 20 fetch wraps ECONNREFUSED inside err.cause.code — check both message and cause
     const rawMsg = `${err.message || ""} ${(err as any).cause?.code || ""}`;
     const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(rawMsg);
     return {
@@ -172,7 +162,6 @@ async function lmstudioCheck(config: ProviderConfig): Promise<ProviderCheckResul
     if (err.name === "AbortError") {
       return { ok: false, status: "timeout", message: `LM Studio (${base}): таймаут подключения` };
     }
-    // Node 20 fetch wraps ECONNREFUSED inside err.cause.code — check both message and cause
     const rawMsg = `${err.message || ""} ${(err as any).cause?.code || ""}`;
     const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(rawMsg);
     return {
@@ -222,12 +211,444 @@ async function lmstudioChat(config: ProviderConfig, messages: ChatMessage[]): Pr
   };
 }
 
+// ---- OpenAI Adapter ----
+
+async function openaiCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
+  if (!config.apiKey || config.apiKey.trim() === "") {
+    return {
+      ok: false,
+      status: "error",
+      message: "OpenAI: не указан API key. Укажите ключ в настройках.",
+    };
+  }
+  try {
+    const res = await fetchWithTimeout(
+      "https://api.openai.com/v1/models",
+      {
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+      },
+      8000
+    );
+    if (res.ok) {
+      return { ok: true, status: "available", message: "OpenAI API доступен, ключ действителен" };
+    }
+    if (res.status === 401) {
+      return { ok: false, status: "error", message: "OpenAI: неверный API key (401 Unauthorized)", httpStatus: 401 };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: "error", message: "OpenAI: превышен лимит запросов (429 Rate Limit)", httpStatus: 429 };
+    }
+    return {
+      ok: false,
+      status: "unavailable",
+      message: `OpenAI API вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      return { ok: false, status: "timeout", message: "OpenAI API: таймаут подключения (8s)" };
+    }
+    return { ok: false, status: "error", message: `OpenAI: ошибка подключения: ${err.message}` };
+  }
+}
+
+async function openaiModels(config: ProviderConfig): Promise<string[]> {
+  if (!config.apiKey) throw new Error("OpenAI: API key не задан");
+  const res = await fetchWithTimeout(
+    "https://api.openai.com/v1/models",
+    {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    },
+    10000
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`OpenAI /v1/models вернул ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  // Filter to chat-capable models only, sorted by id
+  const chatModels: string[] = (data.data || [])
+    .map((m: any) => m.id as string)
+    .filter((id: string) => /gpt|o1|o3/.test(id))
+    .sort((a: string, b: string) => b.localeCompare(a));
+  return chatModels.length > 0 ? chatModels : (data.data || []).map((m: any) => m.id);
+}
+
+async function openaiChat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
+  if (!config.apiKey) throw new Error("OpenAI: API key не задан");
+  const model = config.model || "gpt-4o";
+  const res = await fetchWithTimeout(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: config.temperature,
+        max_tokens: config.maxTokens,
+      }),
+    },
+    90000
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenAI chat ошибка ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  return {
+    content: choice?.message?.content || "",
+    model: data.model || model,
+    provider: "openai",
+    tokenCount: data.usage?.completion_tokens,
+  };
+}
+
+// ---- Anthropic Adapter ----
+
+async function anthropicCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
+  if (!config.apiKey || config.apiKey.trim() === "") {
+    return {
+      ok: false,
+      status: "error",
+      message: "Anthropic: не указан API key. Укажите ключ в настройках.",
+    };
+  }
+  // Anthropic doesn't have a simple /models endpoint that works without a real request.
+  // We do a minimal messages request to verify the key.
+  try {
+    const res = await fetchWithTimeout(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": config.apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: config.model || "claude-3-5-haiku-20241022",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "ping" }],
+        }),
+      },
+      10000
+    );
+    if (res.ok || res.status === 400) {
+      // 400 can mean model/params issue but key is valid
+      const body = await res.json().catch(() => ({}));
+      if (res.ok || (body.type === "error" && body.error?.type !== "authentication_error")) {
+        return { ok: true, status: "available", message: "Anthropic API доступен, ключ действителен" };
+      }
+    }
+    if (res.status === 401) {
+      return { ok: false, status: "error", message: "Anthropic: неверный API key (401 Unauthorized)", httpStatus: 401 };
+    }
+    if (res.status === 403) {
+      return { ok: false, status: "error", message: "Anthropic: доступ запрещён (403 Forbidden)", httpStatus: 403 };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: "error", message: "Anthropic: превышен лимит запросов (429)", httpStatus: 429 };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (body?.error?.type === "authentication_error") {
+      return { ok: false, status: "error", message: "Anthropic: неверный API key", httpStatus: res.status };
+    }
+    return {
+      ok: false,
+      status: "unavailable",
+      message: `Anthropic API вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      return { ok: false, status: "timeout", message: "Anthropic API: таймаут подключения (10s)" };
+    }
+    return { ok: false, status: "error", message: `Anthropic: ошибка подключения: ${err.message}` };
+  }
+}
+
+/** Anthropic doesn't have a public model list endpoint. Return well-known models. */
+function anthropicModels(): string[] {
+  return [
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-haiku-20240307",
+  ];
+}
+
+async function anthropicChat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
+  if (!config.apiKey) throw new Error("Anthropic: API key не задан");
+  const model = config.model || "claude-3-5-sonnet-20241022";
+
+  // Separate system message from conversation messages
+  const systemMessages = messages.filter(m => m.role === "system");
+  const convoMessages = messages.filter(m => m.role !== "system");
+  const systemPrompt = systemMessages.map(m => m.content).join("\n\n");
+
+  const body: Record<string, any> = {
+    model,
+    max_tokens: config.maxTokens || 2048,
+    messages: convoMessages.map(m => ({ role: m.role, content: m.content })),
+  };
+  if (systemPrompt) body.system = systemPrompt;
+
+  const res = await fetchWithTimeout(
+    "https://api.anthropic.com/v1/messages",
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": config.apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+    90000
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Anthropic chat ошибка ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const content = data.content?.[0]?.text || "";
+  return {
+    content,
+    model: data.model || model,
+    provider: "anthropic",
+    tokenCount: data.usage?.output_tokens,
+  };
+}
+
+// ---- Google Gemini Adapter ----
+
+async function geminiCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
+  if (!config.apiKey || config.apiKey.trim() === "") {
+    return {
+      ok: false,
+      status: "error",
+      message: "Gemini: не указан API key. Укажите ключ в настройках.",
+    };
+  }
+  try {
+    const model = config.model || "gemini-1.5-flash";
+    const res = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}?key=${config.apiKey}`,
+      {},
+      8000
+    );
+    if (res.ok) {
+      return { ok: true, status: "available", message: "Gemini API доступен, ключ действителен" };
+    }
+    if (res.status === 400) {
+      // 400 often means invalid key format or bad model name — try listing models
+      const listRes = await fetchWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${config.apiKey}`,
+        {},
+        8000
+      );
+      if (listRes.ok) {
+        return { ok: true, status: "available", message: "Gemini API доступен, ключ действителен" };
+      }
+    }
+    if (res.status === 401 || res.status === 403) {
+      const body = await res.json().catch(() => ({}));
+      const errMsg = body?.error?.message || "неверный API key";
+      return { ok: false, status: "error", message: `Gemini: ${errMsg} (${res.status})`, httpStatus: res.status };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: "error", message: "Gemini: превышен лимит запросов (429)", httpStatus: 429 };
+    }
+    return {
+      ok: false,
+      status: "unavailable",
+      message: `Gemini API вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      return { ok: false, status: "timeout", message: "Gemini API: таймаут подключения (8s)" };
+    }
+    return { ok: false, status: "error", message: `Gemini: ошибка подключения: ${err.message}` };
+  }
+}
+
+async function geminiModels(config: ProviderConfig): Promise<string[]> {
+  if (!config.apiKey) throw new Error("Gemini: API key не задан");
+  const res = await fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${config.apiKey}`,
+    {},
+    10000
+  );
+  if (!res.ok) {
+    // Fall back to known model list
+    return [
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-8b",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-lite",
+    ];
+  }
+  const data = await res.json();
+  return (data.models || [])
+    .map((m: any) => (m.name as string).replace("models/", ""))
+    .filter((id: string) => id.startsWith("gemini"));
+}
+
+async function geminiChat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
+  if (!config.apiKey) throw new Error("Gemini: API key не задан");
+  const model = config.model || "gemini-1.5-flash";
+
+  // Convert messages to Gemini format
+  const contents: any[] = [];
+  let systemInstruction: string | null = null;
+
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      systemInstruction = msg.content;
+    } else {
+      contents.push({
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.content }],
+      });
+    }
+  }
+
+  const body: Record<string, any> = {
+    contents,
+    generationConfig: {
+      temperature: config.temperature,
+      maxOutputTokens: config.maxTokens,
+    },
+  };
+  if (systemInstruction) {
+    body.systemInstruction = { parts: [{ text: systemInstruction }] };
+  }
+
+  const res = await fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    90000
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gemini chat ошибка ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  return {
+    content,
+    model,
+    provider: "gemini",
+    tokenCount: data.usageMetadata?.candidatesTokenCount,
+  };
+}
+
+// ---- OpenAI-Compatible Adapter ----
+
+async function openaiCompatibleCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
+  const base = buildBaseUrl(config);
+  const url = `${base}/v1/models`;
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.apiKey) headers["Authorization"] = `Bearer ${config.apiKey}`;
+
+    const res = await fetchWithTimeout(url, { headers }, 8000);
+    if (res.ok) {
+      return { ok: true, status: "available", message: `OpenAI-совместимый сервер доступен (${base})` };
+    }
+    if (res.status === 401) {
+      return { ok: false, status: "error", message: `${base}: неверный API key (401)`, httpStatus: 401 };
+    }
+    return {
+      ok: false,
+      status: res.status === 404 ? "unsupported" : "unavailable",
+      message: `${base} вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      return { ok: false, status: "timeout", message: `OpenAI-совместимый сервер (${base}): таймаут (8s)` };
+    }
+    const rawMsg = `${err.message || ""} ${(err as any).cause?.code || ""}`;
+    const isRefused = /ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(rawMsg);
+    return {
+      ok: false,
+      status: isRefused ? "unavailable" : "error",
+      message: `Не удалось подключиться к ${base}: ${err.message}`,
+    };
+  }
+}
+
+async function openaiCompatibleModels(config: ProviderConfig): Promise<string[]> {
+  const url = `${buildBaseUrl(config)}/v1/models`;
+  const headers: Record<string, string> = {};
+  if (config.apiKey) headers["Authorization"] = `Bearer ${config.apiKey}`;
+  const res = await fetchWithTimeout(url, { headers }, 10000);
+  if (!res.ok) throw new Error(`/v1/models вернул ${res.status}`);
+  const data = await res.json();
+  return (data.data || []).map((m: any) => m.id).filter(Boolean);
+}
+
+async function openaiCompatibleChat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
+  const url = `${buildBaseUrl(config)}/v1/chat/completions`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.apiKey) headers["Authorization"] = `Bearer ${config.apiKey}`;
+
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        temperature: config.temperature,
+        max_tokens: config.maxTokens,
+        stream: false,
+      }),
+    },
+    90000
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenAI-compatible chat ошибка ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  return {
+    content: choice?.message?.content || "",
+    model: data.model || config.model,
+    provider: "openai_compatible",
+    tokenCount: data.usage?.completion_tokens,
+  };
+}
+
 // ---- Unified Gateway ----
 
 export async function checkProvider(config: ProviderConfig): Promise<ProviderCheckResult> {
   switch (config.providerType) {
-    case "ollama":   return ollamaCheck(config);
-    case "lmstudio": return lmstudioCheck(config);
+    case "ollama":            return ollamaCheck(config);
+    case "lmstudio":          return lmstudioCheck(config);
+    case "openai":            return openaiCheck(config);
+    case "anthropic":         return anthropicCheck(config);
+    case "gemini":            return geminiCheck(config);
+    case "openai_compatible": return openaiCompatibleCheck(config);
     default:
       return { ok: false, status: "unsupported", message: `Неизвестный провайдер: ${config.providerType}` };
   }
@@ -235,8 +656,12 @@ export async function checkProvider(config: ProviderConfig): Promise<ProviderChe
 
 export async function listModels(config: ProviderConfig): Promise<string[]> {
   switch (config.providerType) {
-    case "ollama":   return ollamaModels(config);
-    case "lmstudio": return lmstudioModels(config);
+    case "ollama":            return ollamaModels(config);
+    case "lmstudio":          return lmstudioModels(config);
+    case "openai":            return openaiModels(config);
+    case "anthropic":         return anthropicModels();
+    case "gemini":            return geminiModels(config);
+    case "openai_compatible": return openaiCompatibleModels(config);
     default:
       throw new Error(`Неизвестный провайдер: ${config.providerType}`);
   }
@@ -244,8 +669,12 @@ export async function listModels(config: ProviderConfig): Promise<string[]> {
 
 export async function chat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
   switch (config.providerType) {
-    case "ollama":   return ollamaChat(config, messages);
-    case "lmstudio": return lmstudioChat(config, messages);
+    case "ollama":            return ollamaChat(config, messages);
+    case "lmstudio":          return lmstudioChat(config, messages);
+    case "openai":            return openaiChat(config, messages);
+    case "anthropic":         return anthropicChat(config, messages);
+    case "gemini":            return geminiChat(config, messages);
+    case "openai_compatible": return openaiCompatibleChat(config, messages);
     default:
       throw new Error(`Неизвестный провайдер: ${config.providerType}`);
   }

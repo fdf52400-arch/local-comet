@@ -10,9 +10,10 @@ import {
   Server, Terminal, KeyRound,
   CheckCircle2, XCircle, Loader2,
   Eye, EyeOff, ChevronRight, Info,
-  Cloud, ArrowLeft, Zap,
+  Cloud, ArrowLeft, Zap, AlertTriangle,
 } from "lucide-react";
 import type { ProviderType } from "@shared/schema";
+import { isHostedPreview, localProviderHostedNote } from "@/lib/hosting-env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,39 +32,64 @@ interface CloudProviderDef {
   label: string;
   description: string;
   placeholder: string;
-  note: string;
+  keyDocsUrl: string;
+  supportsModelList: boolean;
+  modelListNote?: string;
 }
 
 const CLOUD_PROVIDERS: CloudProviderDef[] = [
-  {
-    id: "openai_compatible",
-    label: "OpenAI Compatible",
-    description: "vLLM, LiteLLM, Jan, любой OpenAI-совместимый сервер",
-    placeholder: "sk-… или оставьте пустым",
-    note: "Конфигурация сохраняется. Агент пока работает только через Ollama / LM Studio.",
-  },
   {
     id: "openai",
     label: "OpenAI",
     description: "GPT-4o, GPT-4-turbo, o1 — официальный API OpenAI",
     placeholder: "sk-…",
-    note: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    keyDocsUrl: "https://platform.openai.com/api-keys",
+    supportsModelList: true,
   },
   {
     id: "anthropic",
     label: "Anthropic",
     description: "Claude 3.5, Claude 3 Haiku — официальный API Anthropic",
     placeholder: "sk-ant-…",
-    note: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    keyDocsUrl: "https://console.anthropic.com/settings/keys",
+    supportsModelList: false,
+    modelListNote: "Anthropic не предоставляет публичный список моделей через API. Выберите модель вручную.",
   },
   {
     id: "gemini",
     label: "Google Gemini",
     description: "Gemini 1.5 Pro, Gemini Flash — Google AI API",
     placeholder: "AIza…",
-    note: "Конфигурация и API-ключ сохраняются. Агент пока работает только через Ollama / LM Studio.",
+    keyDocsUrl: "https://aistudio.google.com/app/apikey",
+    supportsModelList: true,
+  },
+  {
+    id: "openai_compatible",
+    label: "OpenAI Compatible",
+    description: "vLLM, LiteLLM, Jan, любой OpenAI-совместимый сервер",
+    placeholder: "sk-… или оставьте пустым",
+    keyDocsUrl: "",
+    supportsModelList: true,
+    modelListNote: "Список моделей загружается с вашего сервера (/v1/models).",
   },
 ];
+
+// ─── Hosted preview banner ─────────────────────────────────────────────────────
+
+function HostedPreviewBanner() {
+  if (!isHostedPreview()) return null;
+  return (
+    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-start gap-2" data-testid="hosted-preview-banner">
+      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+      <div className="space-y-0.5">
+        <p className="text-xs text-amber-300 font-semibold">Публичный preview — локальные модели недоступны</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {localProviderHostedNote()}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 // ─── API Key input ────────────────────────────────────────────────────────────
 
@@ -143,6 +169,7 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
   const [model, setModel] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [connStatus, setConnStatus] = useState<{ ok: boolean; message: string } | null | "checking">(null);
+  const hosted = isHostedPreview();
 
   const checkMutation = useMutation({
     mutationFn: async () => {
@@ -217,6 +244,24 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
         </p>
       </div>
 
+      {/* Hosted preview warning — shown prominently for local providers */}
+      {hosted && (
+        <div className="bg-amber-500/10 border border-amber-500/35 rounded-lg p-4 flex items-start gap-3" data-testid="local-provider-hosted-warning">
+          <AlertTriangle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1.5">
+            <p className="text-sm text-amber-300 font-semibold">Локальный провайдер в публичном preview</p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Этот preview запущен на публичном сервере и <strong className="text-foreground/80">не видит ваш localhost</strong>.
+              {" "}Подключение к {label} ({baseUrl}:{port}) будет недоступно.
+            </p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Для работы с {label}: запустите приложение локально (<code className="font-mono bg-black/20 px-1 rounded">npm run dev</code>),
+              либо используйте облачный провайдер (OpenAI, Anthropic, Gemini).
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Setup command hint */}
       <div className="bg-muted/40 border border-border rounded-lg p-3 space-y-1.5">
         <div className="flex items-center gap-2 text-xs font-semibold text-foreground/80">
@@ -278,6 +323,11 @@ function LocalProviderSetup({ providerType, label, defaultPort, setupCmd, onBack
           <div className="flex justify-center">
             <ConnectionBadge status={connStatus} />
           </div>
+        )}
+        {hosted && connStatus && typeof connStatus === "object" && !connStatus.ok && (
+          <p className="text-xs text-center text-amber-400/80">
+            Это ожидаемо — публичный preview не может достучаться до вашего localhost.
+          </p>
         )}
       </div>
 
@@ -348,15 +398,59 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
   const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("http://localhost");
+  const [port, setPort] = useState(8080);
+  const [checkStatus, setCheckStatus] = useState<{ ok: boolean; message: string } | null | "checking">(null);
+  const [models, setModels] = useState<string[]>([]);
 
   const provDef = CLOUD_PROVIDERS.find(p => p.id === selectedProvider)!;
+  const isCompatible = selectedProvider === "openai_compatible";
+
+  const checkMutation = useMutation({
+    mutationFn: async () => {
+      setCheckStatus("checking");
+      const payload = {
+        providerType: selectedProvider,
+        apiKey,
+        model,
+        baseUrl: isCompatible ? baseUrl : "",
+        port: isCompatible ? port : 0,
+      };
+      const res = await apiRequest("POST", "/api/providers/check", payload);
+      return res.json();
+    },
+    onSuccess: async (data) => {
+      setCheckStatus(data);
+      if (data.ok) {
+        // Try to load models for providers that support it
+        try {
+          const mRes = await apiRequest("POST", "/api/providers/models", {
+            providerType: selectedProvider,
+            apiKey,
+            model,
+            baseUrl: isCompatible ? baseUrl : "",
+            port: isCompatible ? port : 0,
+          });
+          const mData = await mRes.json();
+          const list: string[] = mData.models || [];
+          setModels(list);
+          if (list.length > 0 && !model) setModel(list[0]);
+        } catch {
+          // model listing is optional
+        }
+      }
+    },
+    onError: (err: Error) => {
+      setCheckStatus({ ok: false, message: `Ошибка: ${err.message}` });
+    },
+  });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = {
         providerType: selectedProvider as ProviderType,
-        baseUrl: selectedProvider === "openai_compatible" ? "http://localhost" : "",
-        port: selectedProvider === "openai_compatible" ? 8080 : 0,
+        baseUrl: isCompatible ? baseUrl : "",
+        port: isCompatible ? port : 0,
         model,
         apiKey,
         temperature: "0.7",
@@ -370,7 +464,7 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
       toast({
         title: "Конфигурация сохранена",
-        description: `${provDef.label}${model ? ` · ${model}` : ""} — агент запустится, когда поддержка этого провайдера будет добавлена.`,
+        description: `${provDef.label}${model ? ` · ${model}` : ""} — провайдер активен.`,
       });
       onSaved();
     },
@@ -379,6 +473,7 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
     },
   });
 
+  const checkOk = typeof checkStatus === "object" && checkStatus !== null && checkStatus.ok;
   const canSave = apiKey.trim().length > 0;
 
   return (
@@ -408,7 +503,7 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
           {CLOUD_PROVIDERS.map(p => (
             <button
               key={p.id}
-              onClick={() => { setSelectedProvider(p.id); setApiKey(""); setModel(""); }}
+              onClick={() => { setSelectedProvider(p.id); setApiKey(""); setModel(""); setCheckStatus(null); setModels([]); }}
               className={`p-3 rounded-lg border text-left transition-colors ${
                 selectedProvider === p.id
                   ? "border-primary bg-primary/10"
@@ -426,15 +521,56 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
         </div>
       </div>
 
+      {/* OpenAI-compatible: baseUrl + port */}
+      {isCompatible && (
+        <div className="space-y-1.5">
+          <Label className="text-sm font-medium">Адрес сервера</Label>
+          <div className="flex items-center gap-2">
+            <div className="flex-1">
+              <Input
+                value={baseUrl}
+                onChange={e => { setBaseUrl(e.target.value); setCheckStatus(null); }}
+                placeholder="http://localhost"
+                className="h-11 text-sm font-mono"
+                data-testid="input-base-url-compatible"
+              />
+            </div>
+            <span className="text-muted-foreground text-sm">:</span>
+            <div className="w-28">
+              <Input
+                type="number"
+                value={port}
+                onChange={e => { setPort(parseInt(e.target.value) || 8080); setCheckStatus(null); }}
+                className="h-11 text-sm font-mono text-center"
+                data-testid="input-port-compatible"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* API Key */}
       <div className="space-y-1.5">
-        <Label className="text-sm font-medium flex items-center gap-1.5">
-          <KeyRound className="h-3.5 w-3.5" />
-          API Key для {provDef.label}
+        <Label className="text-sm font-medium flex items-center justify-between">
+          <span className="flex items-center gap-1.5">
+            <KeyRound className="h-3.5 w-3.5" />
+            API Key для {provDef.label}
+          </span>
+          {provDef.keyDocsUrl && (
+            <a
+              href={provDef.keyDocsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline"
+              data-testid="link-api-key-docs"
+            >
+              Где взять ключ?
+            </a>
+          )}
         </Label>
         <ApiKeyInput
           value={apiKey}
-          onChange={setApiKey}
+          onChange={(v) => { setApiKey(v); setCheckStatus(null); }}
           placeholder={provDef.placeholder}
         />
         <p className="text-xs text-muted-foreground">
@@ -442,30 +578,79 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
         </p>
       </div>
 
-      {/* Model */}
-      <div className="space-y-1.5">
-        <Label className="text-sm font-medium">Модель (опционально)</Label>
-        <Input
-          value={model}
-          onChange={e => setModel(e.target.value)}
-          placeholder={
-            selectedProvider === "openai" ? "gpt-4o, gpt-4-turbo…" :
-            selectedProvider === "anthropic" ? "claude-3-5-sonnet-20241022…" :
-            selectedProvider === "gemini" ? "gemini-1.5-pro…" :
-            "gpt-3.5-turbo, custom-model…"
-          }
-          className="h-11 text-sm font-mono"
-          data-testid="input-cloud-model"
-        />
-      </div>
-
-      {/* Config-only notice */}
-      <div className="bg-blue-500/8 border border-blue-500/25 rounded-lg p-3 flex items-start gap-2" data-testid="config-only-notice-onboarding">
-        <Info className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
-          <p className="text-xs text-blue-300 font-semibold">Конфигурация сохраняется, агент пока недоступен</p>
-          <p className="text-xs text-muted-foreground leading-relaxed">{provDef.note}</p>
+      {/* Verify key button */}
+      {apiKey.trim().length > 0 && (
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            onClick={() => checkMutation.mutate()}
+            disabled={checkMutation.isPending}
+            className="w-full h-10 gap-2 text-sm"
+            data-testid="button-verify-api-key"
+          >
+            {checkMutation.isPending
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Zap className="h-4 w-4" />}
+            Проверить ключ
+          </Button>
+          {checkStatus && (
+            <div className="flex justify-center">
+              <ConnectionBadge status={checkStatus} />
+            </div>
+          )}
         </div>
+      )}
+
+      {/* Model — shown after check or always */}
+      <div className="space-y-1.5">
+        <Label className="text-sm font-medium">Модель</Label>
+        {models.length > 0 ? (
+          <div className="grid grid-cols-1 gap-1.5 max-h-44 overflow-y-auto pr-1">
+            {models.slice(0, 20).map(m => (
+              <button
+                key={m}
+                onClick={() => setModel(m)}
+                className={`flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors text-left ${
+                  model === m
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border hover:border-muted-foreground/40 hover:bg-accent/30"
+                }`}
+                data-testid={`button-cloud-model-${m}`}
+              >
+                <span className="font-mono text-xs truncate">{m}</span>
+                {model === m && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <Input
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder={
+                selectedProvider === "openai" ? "gpt-4o, gpt-4-turbo…" :
+                selectedProvider === "anthropic" ? "claude-3-5-sonnet-20241022…" :
+                selectedProvider === "gemini" ? "gemini-1.5-pro…" :
+                "gpt-3.5-turbo, custom-model…"
+              }
+              className="h-11 text-sm font-mono"
+              data-testid="input-cloud-model"
+            />
+            {!provDef.supportsModelList && provDef.modelListNote && (
+              <p className="text-xs text-muted-foreground">{provDef.modelListNote}</p>
+            )}
+            {provDef.supportsModelList && checkOk && (
+              <p className="text-xs text-muted-foreground">
+                Модели загружены — выберите выше или введите название вручную.
+              </p>
+            )}
+            {provDef.supportsModelList && !checkOk && (
+              <p className="text-xs text-muted-foreground">
+                Проверьте ключ выше — список моделей загрузится автоматически.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Save */}
@@ -490,6 +675,7 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
 // ─── Choose screen ─────────────────────────────────────────────────────────────
 
 function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }) {
+  const hosted = isHostedPreview();
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-12 space-y-8" data-testid="onboarding-choose">
       {/* Logo + heading */}
@@ -515,26 +701,41 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
         </p>
       </div>
 
+      {/* Hosted preview global notice */}
+      {hosted && <HostedPreviewBanner />}
+
       {/* 3 big action cards */}
       <div className="space-y-3">
         {/* Ollama */}
         <button
           onClick={() => onSelect("ollama")}
-          className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
+          className={`w-full group flex items-start gap-4 p-5 rounded-xl border transition-all text-left ${
+            hosted
+              ? "border-border opacity-60 cursor-pointer hover:opacity-80"
+              : "border-border hover:border-primary/50 hover:bg-primary/5"
+          }`}
           data-testid="button-onboarding-ollama"
         >
-          <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
-            <Server className="h-5 w-5 text-primary" />
+          <div className={`mt-0.5 h-10 w-10 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+            hosted ? "bg-muted/50" : "bg-primary/10 group-hover:bg-primary/15"
+          }`}>
+            <Server className={`h-5 w-5 ${hosted ? "text-muted-foreground" : "text-primary"}`} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-base font-semibold">Подключить Ollama</span>
-              <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
+              {hosted
+                ? <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30 bg-amber-500/5">Только локально</Badge>
+                : <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
+              }
             </div>
             <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
               Открытый движок для локальных моделей. Быстрый старт, работает без интернета.
             </p>
             <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:11434</p>
+            {hosted && (
+              <p className="text-xs text-amber-400/70 mt-1">Требует локального запуска приложения</p>
+            )}
           </div>
           <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
         </button>
@@ -542,20 +743,32 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
         {/* LM Studio */}
         <button
           onClick={() => onSelect("lmstudio")}
-          className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
+          className={`w-full group flex items-start gap-4 p-5 rounded-xl border transition-all text-left ${
+            hosted
+              ? "border-border opacity-60 cursor-pointer hover:opacity-80"
+              : "border-border hover:border-primary/50 hover:bg-primary/5"
+          }`}
           data-testid="button-onboarding-lmstudio"
         >
-          <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
-            <Terminal className="h-5 w-5 text-primary" />
+          <div className={`mt-0.5 h-10 w-10 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+            hosted ? "bg-muted/50" : "bg-primary/10 group-hover:bg-primary/15"
+          }`}>
+            <Terminal className={`h-5 w-5 ${hosted ? "text-muted-foreground" : "text-primary"}`} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-base font-semibold">Подключить LM Studio</span>
+              {hosted && (
+                <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30 bg-amber-500/5">Только локально</Badge>
+              )}
             </div>
             <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
               GUI-приложение с OpenAI-совместимым API. Удобно для скачивания и тестирования моделей.
             </p>
             <p className="text-xs text-muted-foreground/60 mt-1 font-mono">localhost:1234</p>
+            {hosted && (
+              <p className="text-xs text-amber-400/70 mt-1">Требует локального запуска приложения</p>
+            )}
           </div>
           <ChevronRight className="h-5 w-5 text-muted-foreground/40 shrink-0 mt-2.5 group-hover:text-primary/60 transition-colors" />
         </button>
@@ -566,16 +779,19 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
           className="w-full group flex items-start gap-4 p-5 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-left"
           data-testid="button-onboarding-apikey"
         >
-          <div className="mt-0.5 h-10 w-10 rounded-lg bg-muted flex items-center justify-center shrink-0 group-hover:bg-muted/80 transition-colors">
-            <KeyRound className="h-5 w-5 text-muted-foreground" />
+          <div className="mt-0.5 h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+            <KeyRound className="h-5 w-5 text-primary" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-base font-semibold">Вставить API key</span>
               <Badge variant="outline" className="text-[10px] text-blue-400 border-blue-500/30 bg-blue-500/5">Облако</Badge>
+              {hosted && (
+                <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/30 bg-emerald-500/5">Рекомендуется</Badge>
+              )}
             </div>
             <p className="text-sm text-muted-foreground mt-0.5 leading-snug">
-              OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Конфигурация сохраняется.
+              OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
             </p>
             <div className="flex flex-wrap gap-1 mt-2">
               {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
