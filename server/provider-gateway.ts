@@ -639,6 +639,137 @@ async function openaiCompatibleChat(config: ProviderConfig, messages: ChatMessag
   };
 }
 
+// ---- MiniMax Adapter ----
+//
+// MiniMax exposes an OpenAI-compatible API at https://api.minimax.io/v1.
+// Auth: Bearer API key (header: Authorization: Bearer <key>).
+// Notable models: MiniMax-M2.7, MiniMax-M2.5, abab6.5s-chat.
+// listModels falls back to a known model list if the /v1/models endpoint
+// returns an error, because MiniMax may restrict that endpoint by plan.
+
+const MINIMAX_BASE_URL = "https://api.minimax.io/v1";
+
+const MINIMAX_KNOWN_MODELS = [
+  "MiniMax-M2.7",
+  "MiniMax-M2.5",
+  "abab6.5s-chat",
+  "abab5.5-chat",
+];
+
+async function minimaxCheck(config: ProviderConfig): Promise<ProviderCheckResult> {
+  if (!config.apiKey || config.apiKey.trim() === "") {
+    return {
+      ok: false,
+      status: "error",
+      message: "MiniMax: не указан API key. Укажите ключ в настройках.",
+    };
+  }
+  try {
+    const res = await fetchWithTimeout(
+      `${MINIMAX_BASE_URL}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+      },
+      8000
+    );
+    if (res.ok) {
+      return { ok: true, status: "available", message: "MiniMax API доступен, ключ действителен" };
+    }
+    if (res.status === 401) {
+      return { ok: false, status: "error", message: "MiniMax: неверный API key (401 Unauthorized)", httpStatus: 401 };
+    }
+    if (res.status === 403) {
+      return { ok: false, status: "error", message: "MiniMax: доступ запрещён (403 Forbidden)", httpStatus: 403 };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: "error", message: "MiniMax: превышен лимит запросов (429 Rate Limit)", httpStatus: 429 };
+    }
+    // Some MiniMax plans block /v1/models — if we get a 4xx that isn't auth,
+    // treat the key as potentially valid and tell the user to verify manually.
+    if (res.status >= 400 && res.status < 500) {
+      return {
+        ok: true,
+        status: "available",
+        message: `MiniMax API отвечает (${res.status}) — ключ принят, список моделей может быть ограничен тарифом`,
+        httpStatus: res.status,
+      };
+    }
+    return {
+      ok: false,
+      status: "unavailable",
+      message: `MiniMax API вернул статус ${res.status}`,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      return { ok: false, status: "timeout", message: "MiniMax API: таймаут подключения (8s)" };
+    }
+    return { ok: false, status: "error", message: `MiniMax: ошибка подключения: ${err.message}` };
+  }
+}
+
+async function minimaxModels(config: ProviderConfig): Promise<string[]> {
+  if (!config.apiKey) throw new Error("MiniMax: API key не задан");
+  try {
+    const res = await fetchWithTimeout(
+      `${MINIMAX_BASE_URL}/models`,
+      {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+      },
+      10000
+    );
+    if (!res.ok) {
+      // Fallback to static known model list when endpoint is inaccessible
+      return MINIMAX_KNOWN_MODELS;
+    }
+    const data = await res.json();
+    const ids: string[] = (data.data || []).map((m: any) => m.id as string).filter(Boolean);
+    return ids.length > 0 ? ids : MINIMAX_KNOWN_MODELS;
+  } catch {
+    // On any network failure fall back to the static list so the user
+    // can still choose a model name manually.
+    return MINIMAX_KNOWN_MODELS;
+  }
+}
+
+async function minimaxChat(config: ProviderConfig, messages: ChatMessage[]): Promise<ChatResponse> {
+  if (!config.apiKey) throw new Error("MiniMax: API key не задан");
+  const model = config.model || "MiniMax-M2.7";
+  const res = await fetchWithTimeout(
+    `${MINIMAX_BASE_URL}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: config.temperature,
+        max_tokens: config.maxTokens,
+        stream: false,
+      }),
+    },
+    90000
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`MiniMax chat ошибка ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  return {
+    content: choice?.message?.content || "",
+    model: data.model || model,
+    provider: "minimax",
+    tokenCount: data.usage?.completion_tokens,
+  };
+}
+
 // ---- Unified Gateway ----
 
 export async function checkProvider(config: ProviderConfig): Promise<ProviderCheckResult> {
@@ -649,6 +780,7 @@ export async function checkProvider(config: ProviderConfig): Promise<ProviderChe
     case "anthropic":         return anthropicCheck(config);
     case "gemini":            return geminiCheck(config);
     case "openai_compatible": return openaiCompatibleCheck(config);
+    case "minimax":           return minimaxCheck(config);
     default:
       return { ok: false, status: "unsupported", message: `Неизвестный провайдер: ${config.providerType}` };
   }
@@ -662,6 +794,7 @@ export async function listModels(config: ProviderConfig): Promise<string[]> {
     case "anthropic":         return anthropicModels();
     case "gemini":            return geminiModels(config);
     case "openai_compatible": return openaiCompatibleModels(config);
+    case "minimax":           return minimaxModels(config);
     default:
       throw new Error(`Неизвестный провайдер: ${config.providerType}`);
   }
@@ -675,6 +808,7 @@ export async function chat(config: ProviderConfig, messages: ChatMessage[]): Pro
     case "anthropic":         return anthropicChat(config, messages);
     case "gemini":            return geminiChat(config, messages);
     case "openai_compatible": return openaiCompatibleChat(config, messages);
+    case "minimax":           return minimaxChat(config, messages);
     default:
       throw new Error(`Неизвестный провайдер: ${config.providerType}`);
   }

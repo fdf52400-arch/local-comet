@@ -5,12 +5,14 @@
 
 .DESCRIPTION
     Starts Local Comet in production mode.
-    Expects Ollama on http://localhost:11436 and LM Studio on http://localhost:1234.
+    Works on Windows without any extra build tools — falls back to in-memory
+    storage automatically if better-sqlite3 native binary is unavailable.
+    Expects Ollama on http://127.0.0.1:11436 or LM Studio on http://192.168.31.168:1234.
 
 .NOTES
     Run this from the project root:
         powershell -ExecutionPolicy Bypass -File run-local-comet.ps1
-    
+
     The server window must stay open while Local Comet is running.
     After startup, open http://localhost:5051 in your browser manually.
 #>
@@ -23,8 +25,8 @@ $Host.UI.RawUI.WindowTitle = 'Local Comet'
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "  ║         Local Comet — local mode         ║" -ForegroundColor Cyan
-Write-Host "  ║  Ollama  : http://localhost:11436         ║" -ForegroundColor Cyan
-Write-Host "  ║  LM Studio: http://localhost:1234         ║" -ForegroundColor Cyan
+Write-Host "  ║  Ollama  : http://127.0.0.1:11436        ║" -ForegroundColor Cyan
+Write-Host "  ║  LM Studio: http://192.168.31.168:1234   ║" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
@@ -56,16 +58,33 @@ if (-not (Test-Path "node_modules")) {
     Write-Host "[OK] node_modules present, skipping npm install." -ForegroundColor Green
 }
 
-# ── Create DB schema if database is missing ───────────────────────────────────
-if (-not (Test-Path "data.db")) {
-    Write-Host "[INFO] No database found. Running db:push to create schema..." -ForegroundColor Yellow
-    npx drizzle-kit push 2>&1 | Out-Null
-    Write-Host "[OK] Database schema created." -ForegroundColor Green
+# ── Check better-sqlite3 native binary ────────────────────────────────────────
+# If the .node file cannot be loaded (e.g. Linux-built binary on Windows),
+# the app automatically falls back to in-memory storage — no crash.
+# To enable persistent SQLite, run: npm rebuild better-sqlite3
+$SqliteNode = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+if (Test-Path $SqliteNode) {
+    # Quick test: try to load the binary
+    $testResult = node -e "try { require('./node_modules/better-sqlite3'); process.exit(0); } catch(e) { process.exit(1); }" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[WARN] better-sqlite3 native binary cannot be loaded on this Windows install." -ForegroundColor Yellow
+        Write-Host "       The app will run with IN-MEMORY storage (data resets on restart)." -ForegroundColor Yellow
+        Write-Host "       To enable persistent SQLite storage, run once:" -ForegroundColor Yellow
+        Write-Host "         npm rebuild better-sqlite3" -ForegroundColor White
+        Write-Host ""
+    } else {
+        Write-Host "[OK] better-sqlite3 native binary: OK (SQLite persistence enabled)" -ForegroundColor Green
+    }
+} else {
+    Write-Host "[WARN] better-sqlite3 native binary not found." -ForegroundColor Yellow
+    Write-Host "       Running with IN-MEMORY storage (data resets on restart)." -ForegroundColor Yellow
+    Write-Host "       To enable persistent SQLite storage, run once: npm rebuild better-sqlite3" -ForegroundColor Yellow
+    Write-Host ""
 }
 
 # ── Check if dist/index.cjs exists ────────────────────────────────────────────
-if (-not (Test-Path "dist/index.cjs")) {
-    Write-Host "[WARN] dist/index.cjs not found. Running build..." -ForegroundColor Yellow
+if (-not (Test-Path "dist\index.cjs")) {
+    Write-Host "[WARN] dist\index.cjs not found. Running build..." -ForegroundColor Yellow
     npm run build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Build failed. Check output above." -ForegroundColor Red
@@ -95,7 +114,7 @@ Write-Host ""
 $env:NODE_ENV = 'production'
 $env:LOCAL_COMET_PORT = '5051'
 
-node dist/index.cjs
+node dist\index.cjs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""

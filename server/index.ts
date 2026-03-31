@@ -70,9 +70,16 @@ app.use((req, res, next) => {
     log(`Chromium binary: ${available ? "found" : "NOT FOUND (browser tasks will be rejected — run: npx playwright install chromium)"}`, "startup");
   }).catch(() => { /* ignore */ });
 
-  // Auto-seed Kwork demo data on first start
+  // Log storage mode
   try {
-    const { storage } = await import("./storage");
+    const { storage, storageMode } = await import("./storage");
+    if (storageMode === "memory") {
+      log("Storage: in-memory mode (better-sqlite3 unavailable — data resets on restart)", "startup");
+      log("  To enable persistence, run: npm rebuild better-sqlite3", "startup");
+    } else {
+      log("Storage: SQLite (data.db)", "startup");
+    }
+    // Auto-seed Kwork demo data on first start
     await storage.seedKworkLeads();
   } catch (e) {
     console.error("Kwork seed error:", e);

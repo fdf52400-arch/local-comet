@@ -1,0 +1,1 @@
+Windows hotfix: removed Unix-style NODE_ENV assignment from npm scripts so npm run dev/start work in PowerShell and cmd without extra syntax.

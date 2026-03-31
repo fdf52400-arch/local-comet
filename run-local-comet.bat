@@ -5,8 +5,8 @@ chcp 65001 >nul 2>&1
 echo.
 echo  ╔══════════════════════════════════════════╗
 echo  ║         Local Comet — local mode         ║
-echo  ║  Ollama  : http://localhost:11436         ║
-echo  ║  LM Studio: http://localhost:1234         ║
+echo  ║  Ollama  : http://127.0.0.1:11436        ║
+echo  ║  LM Studio: http://192.168.31.168:1234   ║
 echo  ╚══════════════════════════════════════════╝
 echo.
 
@@ -18,7 +18,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for /f "tokens=1 delims=v" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
+for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
 echo [OK] Node.js found: %NODE_VER%
 
 :: ── Install dependencies if node_modules is missing ───────────────────────────
@@ -35,11 +35,37 @@ if not exist "node_modules\" (
     echo [OK] node_modules present, skipping npm install.
 )
 
-:: ── Optional: remind user to run db:push if schema was changed ─────────────────
-if not exist "data.db" (
-    echo [INFO] No database found. Running db:push to create schema...
-    call npx drizzle-kit push >nul 2>&1
-    echo [OK] Database schema created.
+:: ── Check better-sqlite3 native binary ─────────────────────────────────────────
+:: The app falls back to in-memory storage automatically if the native binary
+:: cannot be loaded (e.g. Linux-built .node file on Windows).
+:: Data will not be persisted. To fix: npm rebuild better-sqlite3
+if exist "node_modules\better-sqlite3\build\Release\better_sqlite3.node" (
+    node -e "try{require('./node_modules/better-sqlite3');process.exit(0);}catch(e){process.exit(1);}" >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] better-sqlite3 native binary cannot load on this Windows install.
+        echo        App will use IN-MEMORY storage (data resets on restart).
+        echo        To enable SQLite persistence, run: npm rebuild better-sqlite3
+        echo.
+    ) else (
+        echo [OK] better-sqlite3: OK (SQLite persistence enabled)
+    )
+) else (
+    echo [WARN] better-sqlite3 native binary not found.
+    echo        App will use IN-MEMORY storage (data resets on restart).
+    echo        To enable SQLite persistence, run: npm rebuild better-sqlite3
+    echo.
+)
+
+:: ── Build if dist/index.cjs is missing ─────────────────────────────────────────
+if not exist "dist\index.cjs" (
+    echo [WARN] dist\index.cjs not found. Running build...
+    call npm run build
+    if errorlevel 1 (
+        echo [ERROR] Build failed. Check output above.
+        pause
+        exit /b 1
+    )
+    echo [OK] Build complete.
 )
 
 :: ── Check if port 5051 is already in use ──────────────────────────────────────
@@ -62,7 +88,7 @@ echo.
 set NODE_ENV=production
 set LOCAL_COMET_PORT=5051
 
-node dist/index.cjs
+node dist\index.cjs
 
 if errorlevel 1 (
     echo.

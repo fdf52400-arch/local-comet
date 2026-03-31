@@ -43,6 +43,7 @@ import {
   DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
   EXAMPLE_LM_STUDIO_MODEL,
+  MINIMAX_BASE_URL, EXAMPLE_MINIMAX_MODEL,
 } from "@/lib/hosting-env";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -398,6 +399,7 @@ const SIDECAR_PROVIDERS = [
   { id: "openai",           label: "OpenAI",           local: false, defaultBaseUrl: "https://api.openai.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "gpt-4o, gpt-4-turbo…" },
   { id: "anthropic",        label: "Anthropic",        local: false, defaultBaseUrl: "https://api.anthropic.com", defaultPort: null, hasPort: false, hasApiKey: true,  modelPlaceholder: "claude-3-5-sonnet…" },
   { id: "gemini",           label: "Gemini",           local: false, defaultBaseUrl: "https://generativelanguage.googleapis.com", defaultPort: null, hasPort: false, hasApiKey: true, modelPlaceholder: "gemini-1.5-pro…" },
+  { id: "minimax",          label: "MiniMax",          local: false, defaultBaseUrl: MINIMAX_BASE_URL, defaultPort: null, hasPort: false, hasApiKey: true, modelPlaceholder: EXAMPLE_MINIMAX_MODEL + ", MiniMax-M2.5…" },
 ] as const;
 
 /** Collapsible Model Settings (compact) */

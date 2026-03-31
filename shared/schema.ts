@@ -47,6 +47,7 @@ export type SessionTab = typeof sessionTabs.$inferSelect;
 //   anthropic         — Anthropic API      (real check + chat via stored apiKey)
 //   openai            — OpenAI API         (real check + model list + chat via stored apiKey)
 //   gemini            — Google Gemini API  (real check + model list + chat via stored apiKey)
+//   minimax           — MiniMax cloud API  (OpenAI-compatible, https://api.minimax.io/v1, bearer key)
 
 export const providerSettings = sqliteTable("provider_settings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -69,7 +70,7 @@ export type ProviderSettings = typeof providerSettings.$inferSelect;
 // because they connect to localhost on the user's machine.
 export const LOCAL_PROVIDERS = ["ollama", "lmstudio"] as const;
 // Cloud API providers — work from anywhere with a valid API key.
-export const CLOUD_PROVIDERS = ["openai", "anthropic", "gemini", "openai_compatible"] as const;
+export const CLOUD_PROVIDERS = ["openai", "anthropic", "gemini", "openai_compatible", "minimax"] as const;
 // Legacy alias kept for backwards compatibility
 export const CONFIG_ONLY_PROVIDERS = CLOUD_PROVIDERS;
 export type LocalProviderType = typeof LOCAL_PROVIDERS[number];

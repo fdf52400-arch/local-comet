@@ -89,3 +89,11 @@ export const DEFAULT_LM_STUDIO_BASE_URL = "http://192.168.31.168";
  * Example LM Studio model name (used as placeholder in UI, not auto-selected).
  */
 export const EXAMPLE_LM_STUDIO_MODEL = "google/gemma-3n-e4b";
+
+/**
+ * MiniMax cloud API — OpenAI-compatible endpoint.
+ * https://api.minimax.io/v1
+ * Auth: Bearer API key from https://platform.minimaxi.com
+ */
+export const MINIMAX_BASE_URL = "https://api.minimax.io/v1";
+export const EXAMPLE_MINIMAX_MODEL = "MiniMax-M2.7";

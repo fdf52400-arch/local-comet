@@ -7,189 +7,21 @@ import {
   type SessionTab, type InsertSessionTab, sessionTabs,
   type KworkLead, type InsertKworkLead, kworkLeads,
 } from "@shared/schema";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
 import { eq, desc, and, asc } from "drizzle-orm";
+import { createRequire } from "module";
 
-const sqlite = new Database("data.db");
-sqlite.pragma("journal_mode = WAL");
-
-export const db = drizzle(sqlite);
-
-// ─── Migrations ───────────────────────────────────────────────────────────────
-
-function migrate() {
-  // Ensure core tables exist
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS provider_settings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      provider_type TEXT NOT NULL DEFAULT 'ollama',
-      base_url TEXT NOT NULL DEFAULT 'http://127.0.0.1',
-      port INTEGER NOT NULL DEFAULT 11436,
-      model TEXT NOT NULL DEFAULT '',
-      api_key TEXT NOT NULL DEFAULT '',
-      temperature TEXT NOT NULL DEFAULT '0.7',
-      max_tokens INTEGER NOT NULL DEFAULT 2048,
-      safety_mode TEXT NOT NULL DEFAULT 'readonly'
-    )
-  `);
-
-  // Add api_key column to provider_settings if missing (migration for existing DBs)
-  try {
-    sqlite.exec(`ALTER TABLE provider_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`);
-  } catch { /* column already exists */ }
-
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS agent_tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      workspace_id INTEGER NOT NULL DEFAULT 1,
-      session_id TEXT NOT NULL DEFAULT 'default',
-      title TEXT NOT NULL,
-      target_url TEXT NOT NULL,
-      goal TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'queued',
-      plan TEXT NOT NULL DEFAULT '[]',
-      queue_position INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
-    )
-  `);
-
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS agent_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id INTEGER NOT NULL,
-      workspace_id INTEGER NOT NULL DEFAULT 1,
-      session_id TEXT NOT NULL DEFAULT 'default',
-      step_index INTEGER NOT NULL DEFAULT 0,
-      action TEXT NOT NULL,
-      detail TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'info',
-      timestamp TEXT NOT NULL
-    )
-  `);
-
-  // Add sessionId column to agent_tasks if missing
-  try {
-    sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'`);
-  } catch { /* column already exists */ }
-
-  // Add queue_position column to agent_tasks if missing
-  try {
-    sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0`);
-  } catch { /* column already exists */ }
-
-  // Add sessionId column to agent_logs if missing
-  try {
-    sqlite.exec(`ALTER TABLE agent_logs ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'`);
-  } catch { /* column already exists */ }
-
-  // Create step_snapshots table if missing
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS step_snapshots (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id INTEGER NOT NULL,
-      session_id TEXT NOT NULL DEFAULT 'default',
-      step_index INTEGER NOT NULL,
-      phase TEXT NOT NULL DEFAULT '',
-      action TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'info',
-      detail TEXT NOT NULL DEFAULT '',
-      timestamp TEXT NOT NULL,
-      screenshot_base64 TEXT,
-      snapshot_json TEXT
-    )
-  `);
-
-  // Migrate old statuses: pending → queued, planning → queued
-  try {
-    sqlite.exec(`UPDATE agent_tasks SET status = 'queued' WHERE status = 'pending'`);
-    sqlite.exec(`UPDATE agent_tasks SET status = 'running' WHERE status = 'planning'`);
-  } catch { /* ignore */ }
-
-  // ── Iteration 6 migrations ──
-
-  // Create workspaces table
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS workspaces (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      is_active INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
-    )
-  `);
-
-  // Create session_tabs table
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS session_tabs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      workspace_id INTEGER NOT NULL DEFAULT 1,
-      session_id TEXT NOT NULL DEFAULT 'default',
-      label TEXT NOT NULL DEFAULT 'Tab',
-      url TEXT NOT NULL DEFAULT '',
-      is_active INTEGER NOT NULL DEFAULT 0,
-      preview_state TEXT NOT NULL DEFAULT '{}',
-      snapshot_json TEXT,
-      selected_element TEXT,
-      history_json TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL
-    )
-  `);
-
-  // Add workspace_id columns
-  try {
-    sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`);
-  } catch { /* column already exists */ }
-
-  try {
-    sqlite.exec(`ALTER TABLE agent_logs ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`);
-  } catch { /* column already exists */ }
-
-  try {
-    sqlite.exec(`ALTER TABLE step_snapshots ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`);
-  } catch { /* column already exists */ }
-
-  // ── Kwork leads migrations ──
-
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS kwork_leads (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source TEXT NOT NULL DEFAULT 'manual',
-      source_raw TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL,
-      budget INTEGER NOT NULL DEFAULT 0,
-      budget_raw TEXT NOT NULL DEFAULT '',
-      order_url TEXT,
-      brief TEXT NOT NULL DEFAULT '',
-      category TEXT NOT NULL DEFAULT '',
-      flag_fits_profile INTEGER NOT NULL DEFAULT 0,
-      flag_needs_call INTEGER NOT NULL DEFAULT 0,
-      flag_needs_access INTEGER NOT NULL DEFAULT 0,
-      flag_needs_design INTEGER NOT NULL DEFAULT 0,
-      flag_needs_mobile INTEGER NOT NULL DEFAULT 0,
-      flag_cloud_vm_fit INTEGER NOT NULL DEFAULT 0,
-      fit_score INTEGER NOT NULL DEFAULT 0,
-      recommendation TEXT NOT NULL DEFAULT 'review_manually',
-      why_fits TEXT NOT NULL DEFAULT '[]',
-      key_risks TEXT NOT NULL DEFAULT '[]',
-      status TEXT NOT NULL DEFAULT 'new',
-      is_shortlisted INTEGER NOT NULL DEFAULT 0,
-      computer_task_id INTEGER,
-      received_at TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    )
-  `);
-
-  // Ensure default workspace exists
-  const wsCount = sqlite.prepare(`SELECT COUNT(*) as cnt FROM workspaces`).get() as any;
-  if (wsCount.cnt === 0) {
-    sqlite.prepare(`INSERT INTO workspaces (name, description, is_active, created_at) VALUES (?, ?, 1, ?)`).run(
-      "Default", "Рабочее пространство по умолчанию", new Date().toISOString()
-    );
-  }
+// createRequire works in both ESM (tsx dev mode) and CJS (production build).
+// In CJS (dist/index.cjs): require is defined directly — use it.
+// In ESM (tsx dev): require is undefined — createRequire from a known node path.
+// We avoid import.meta.url here because esbuild warns about it in cjs output.
+let _require: NodeRequire;
+if (typeof require !== "undefined") {
+  // CJS context (production build, or CommonJS environment)
+  _require = require;
+} else {
+  // ESM context (tsx dev mode) — resolve relative to process.cwd()
+  _require = createRequire(process.cwd() + "/package.json");
 }
-
-migrate();
 
 // ─── Storage Interface ────────────────────────────────────────────────────────
 
@@ -251,53 +83,238 @@ export interface IStorage {
   seedKworkLeads(): Promise<void>;
 }
 
-// ─── Implementation ───────────────────────────────────────────────────────────
+// ─── SQLite / DatabaseStorage ─────────────────────────────────────────────────
+//
+// Loaded only when better-sqlite3 native binary is available.
+// On Windows with a Linux-built .node file (ERR_DLOPEN_FAILED) or any other
+// native-load failure we fall back to MemoryStorage automatically.
+
+// Attempt to load better-sqlite3 synchronously at module evaluation time.
+// If this throws (ERR_DLOPEN_FAILED, MODULE_NOT_FOUND, etc.) we catch below.
+
+let _sqliteAvailable = false;
+let _db: any = null;
+
+function _tryLoadSQLite(): boolean {
+  try {
+    // Use _require (works in both ESM/tsx dev mode and CJS production build).
+    // better-sqlite3 is marked as external in build.ts, so it remains as
+    // require("better-sqlite3") in dist/index.cjs — the try/catch survives bundling.
+    const Database = _require("better-sqlite3");
+    const { drizzle } = _require("drizzle-orm/better-sqlite3");
+
+    const sqlite = new Database("data.db");
+    sqlite.pragma("journal_mode = WAL");
+    _db = drizzle(sqlite);
+
+    _runMigrations(sqlite);
+    _sqliteAvailable = true;
+    return true;
+  } catch (err: any) {
+    const msg: string = err?.message ?? String(err);
+    console.warn(
+      "\n[storage] WARNING: better-sqlite3 native module could not be loaded.\n" +
+      `[storage]   Reason: ${msg}\n` +
+      "[storage]   Falling back to in-memory storage.\n" +
+      "[storage]   Data will NOT be persisted across restarts.\n" +
+      "[storage]   To enable persistence on Windows, run:  npm rebuild better-sqlite3\n"
+    );
+    return false;
+  }
+}
+
+function _runMigrations(sqlite: any) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS provider_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider_type TEXT NOT NULL DEFAULT 'ollama',
+      base_url TEXT NOT NULL DEFAULT 'http://127.0.0.1',
+      port INTEGER NOT NULL DEFAULT 11436,
+      model TEXT NOT NULL DEFAULT '',
+      api_key TEXT NOT NULL DEFAULT '',
+      temperature TEXT NOT NULL DEFAULT '0.7',
+      max_tokens INTEGER NOT NULL DEFAULT 2048,
+      safety_mode TEXT NOT NULL DEFAULT 'readonly'
+    )
+  `);
+
+  try { sqlite.exec(`ALTER TABLE provider_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id INTEGER NOT NULL DEFAULT 1,
+      session_id TEXT NOT NULL DEFAULT 'default',
+      title TEXT NOT NULL,
+      target_url TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      plan TEXT NOT NULL DEFAULT '[]',
+      queue_position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      workspace_id INTEGER NOT NULL DEFAULT 1,
+      session_id TEXT NOT NULL DEFAULT 'default',
+      step_index INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'info',
+      timestamp TEXT NOT NULL
+    )
+  `);
+
+  try { sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'`); } catch { /* exists */ }
+  try { sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  try { sqlite.exec(`ALTER TABLE agent_logs ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'`); } catch { /* exists */ }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS step_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      session_id TEXT NOT NULL DEFAULT 'default',
+      step_index INTEGER NOT NULL,
+      phase TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'info',
+      detail TEXT NOT NULL DEFAULT '',
+      timestamp TEXT NOT NULL,
+      screenshot_base64 TEXT,
+      snapshot_json TEXT
+    )
+  `);
+
+  try { sqlite.exec(`UPDATE agent_tasks SET status = 'queued' WHERE status = 'pending'`); } catch { /* ignore */ }
+  try { sqlite.exec(`UPDATE agent_tasks SET status = 'running' WHERE status = 'planning'`); } catch { /* ignore */ }
+
+  try {
+    sqlite.exec(`
+      UPDATE provider_settings
+      SET base_url = 'http://127.0.0.1', port = 11436
+      WHERE provider_type = 'ollama'
+        AND base_url IN ('http://localhost', 'localhost')
+        AND port = 11434
+    `);
+  } catch { /* ignore */ }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS session_tabs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id INTEGER NOT NULL DEFAULT 1,
+      session_id TEXT NOT NULL DEFAULT 'default',
+      label TEXT NOT NULL DEFAULT 'Tab',
+      url TEXT NOT NULL DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 0,
+      preview_state TEXT NOT NULL DEFAULT '{}',
+      snapshot_json TEXT,
+      selected_element TEXT,
+      history_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  try { sqlite.exec(`ALTER TABLE agent_tasks ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`); } catch { /* exists */ }
+  try { sqlite.exec(`ALTER TABLE agent_logs ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`); } catch { /* exists */ }
+  try { sqlite.exec(`ALTER TABLE step_snapshots ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`); } catch { /* exists */ }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS kwork_leads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      source_raw TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      budget INTEGER NOT NULL DEFAULT 0,
+      budget_raw TEXT NOT NULL DEFAULT '',
+      order_url TEXT,
+      brief TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      flag_fits_profile INTEGER NOT NULL DEFAULT 0,
+      flag_needs_call INTEGER NOT NULL DEFAULT 0,
+      flag_needs_access INTEGER NOT NULL DEFAULT 0,
+      flag_needs_design INTEGER NOT NULL DEFAULT 0,
+      flag_needs_mobile INTEGER NOT NULL DEFAULT 0,
+      flag_cloud_vm_fit INTEGER NOT NULL DEFAULT 0,
+      fit_score INTEGER NOT NULL DEFAULT 0,
+      recommendation TEXT NOT NULL DEFAULT 'review_manually',
+      why_fits TEXT NOT NULL DEFAULT '[]',
+      key_risks TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'new',
+      is_shortlisted INTEGER NOT NULL DEFAULT 0,
+      computer_task_id INTEGER,
+      received_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Ensure default workspace exists
+  const wsCount = sqlite.prepare(`SELECT COUNT(*) as cnt FROM workspaces`).get() as any;
+  if (wsCount.cnt === 0) {
+    sqlite.prepare(`INSERT INTO workspaces (name, description, is_active, created_at) VALUES (?, ?, 1, ?)`).run(
+      "Default", "Рабочее пространство по умолчанию", new Date().toISOString()
+    );
+  }
+}
+
+// ─── DatabaseStorage (SQLite-backed) ─────────────────────────────────────────
 
 export class DatabaseStorage implements IStorage {
   // ── Provider settings ──
 
   async getSettings(): Promise<ProviderSettings | undefined> {
-    return db.select().from(providerSettings).get();
+    return _db.select().from(providerSettings).get();
   }
 
   async upsertSettings(settings: InsertProviderSettings): Promise<ProviderSettings> {
     const existing = await this.getSettings();
     if (existing) {
-      return db.update(providerSettings)
+      return _db.update(providerSettings)
         .set(settings)
         .where(eq(providerSettings.id, existing.id))
         .returning()
         .get();
     }
-    return db.insert(providerSettings).values(settings).returning().get();
+    return _db.insert(providerSettings).values(settings).returning().get();
   }
 
   // ── Workspaces ──
 
   async getWorkspaces(): Promise<Workspace[]> {
-    return db.select().from(workspaces).orderBy(asc(workspaces.id)).all();
+    return _db.select().from(workspaces).orderBy(asc(workspaces.id)).all();
   }
 
   async getWorkspace(id: number): Promise<Workspace | undefined> {
-    return db.select().from(workspaces).where(eq(workspaces.id, id)).get();
+    return _db.select().from(workspaces).where(eq(workspaces.id, id)).get();
   }
 
   async getActiveWorkspace(): Promise<Workspace | undefined> {
-    return db.select().from(workspaces).where(eq(workspaces.isActive, 1)).get();
+    return _db.select().from(workspaces).where(eq(workspaces.isActive, 1)).get();
   }
 
   async createWorkspace(ws: InsertWorkspace): Promise<Workspace> {
-    return db.insert(workspaces).values({
+    return _db.insert(workspaces).values({
       ...ws,
       createdAt: new Date().toISOString(),
     }).returning().get();
   }
 
   async setActiveWorkspace(id: number): Promise<Workspace | undefined> {
-    // Deactivate all
-    db.update(workspaces).set({ isActive: 0 }).run();
-    // Activate selected
-    return db.update(workspaces)
+    _db.update(workspaces).set({ isActive: 0 }).run();
+    return _db.update(workspaces)
       .set({ isActive: 1 })
       .where(eq(workspaces.id, id))
       .returning()
@@ -307,25 +324,25 @@ export class DatabaseStorage implements IStorage {
   // ── Session Tabs ──
 
   async getTabsBySession(workspaceId: number, sessionId: string): Promise<SessionTab[]> {
-    return db.select().from(sessionTabs)
+    return _db.select().from(sessionTabs)
       .where(and(eq(sessionTabs.workspaceId, workspaceId), eq(sessionTabs.sessionId, sessionId)))
       .orderBy(asc(sessionTabs.id))
       .all();
   }
 
   async getTab(id: number): Promise<SessionTab | undefined> {
-    return db.select().from(sessionTabs).where(eq(sessionTabs.id, id)).get();
+    return _db.select().from(sessionTabs).where(eq(sessionTabs.id, id)).get();
   }
 
   async createTab(tab: InsertSessionTab): Promise<SessionTab> {
-    return db.insert(sessionTabs).values({
+    return _db.insert(sessionTabs).values({
       ...tab,
       createdAt: new Date().toISOString(),
     }).returning().get();
   }
 
   async updateTab(id: number, updates: Partial<InsertSessionTab>): Promise<SessionTab | undefined> {
-    return db.update(sessionTabs)
+    return _db.update(sessionTabs)
       .set(updates)
       .where(eq(sessionTabs.id, id))
       .returning()
@@ -333,44 +350,42 @@ export class DatabaseStorage implements IStorage {
   }
 
   async setActiveTab(workspaceId: number, sessionId: string, tabId: number): Promise<void> {
-    // Deactivate all tabs in session
     const tabs = await this.getTabsBySession(workspaceId, sessionId);
     for (const t of tabs) {
-      db.update(sessionTabs).set({ isActive: 0 }).where(eq(sessionTabs.id, t.id)).run();
+      _db.update(sessionTabs).set({ isActive: 0 }).where(eq(sessionTabs.id, t.id)).run();
     }
-    // Activate selected
-    db.update(sessionTabs).set({ isActive: 1 }).where(eq(sessionTabs.id, tabId)).run();
+    _db.update(sessionTabs).set({ isActive: 1 }).where(eq(sessionTabs.id, tabId)).run();
   }
 
   // ── Tasks ──
 
   async getTasks(): Promise<AgentTask[]> {
-    return db.select().from(agentTasks).orderBy(desc(agentTasks.id)).all();
+    return _db.select().from(agentTasks).orderBy(desc(agentTasks.id)).all();
   }
 
   async getTasksBySession(sessionId: string): Promise<AgentTask[]> {
-    return db.select().from(agentTasks)
+    return _db.select().from(agentTasks)
       .where(eq(agentTasks.sessionId, sessionId))
       .orderBy(desc(agentTasks.id))
       .all();
   }
 
   async getTasksByWorkspace(workspaceId: number): Promise<AgentTask[]> {
-    return db.select().from(agentTasks)
+    return _db.select().from(agentTasks)
       .where(eq(agentTasks.workspaceId, workspaceId))
       .orderBy(desc(agentTasks.id))
       .all();
   }
 
   async getTask(id: number): Promise<AgentTask | undefined> {
-    return db.select().from(agentTasks).where(eq(agentTasks.id, id)).get();
+    return _db.select().from(agentTasks).where(eq(agentTasks.id, id)).get();
   }
 
   async createTask(task: InsertAgentTask): Promise<AgentTask> {
-    const allTasks = db.select().from(agentTasks).all();
-    const maxPos = allTasks.reduce((max, t) => Math.max(max, t.queuePosition || 0), 0);
-    
-    return db.insert(agentTasks).values({
+    const allTasks = _db.select().from(agentTasks).all();
+    const maxPos = allTasks.reduce((max: number, t: AgentTask) => Math.max(max, t.queuePosition || 0), 0);
+
+    return _db.insert(agentTasks).values({
       ...task,
       status: "queued",
       plan: "[]",
@@ -382,7 +397,7 @@ export class DatabaseStorage implements IStorage {
   async updateTaskStatus(id: number, status: string, plan?: string): Promise<AgentTask | undefined> {
     const updates: Record<string, any> = { status };
     if (plan !== undefined) updates.plan = plan;
-    return db.update(agentTasks)
+    return _db.update(agentTasks)
       .set(updates)
       .where(eq(agentTasks.id, id))
       .returning()
@@ -390,20 +405,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getQueuedTasks(): Promise<AgentTask[]> {
-    return db.select().from(agentTasks)
+    return _db.select().from(agentTasks)
       .where(eq(agentTasks.status, "queued"))
       .orderBy(asc(agentTasks.queuePosition))
       .all();
   }
 
   async getRunningTask(): Promise<AgentTask | undefined> {
-    return db.select().from(agentTasks)
+    return _db.select().from(agentTasks)
       .where(eq(agentTasks.status, "running"))
       .get();
   }
 
   async getNextQueuedTask(): Promise<AgentTask | undefined> {
-    return db.select().from(agentTasks)
+    return _db.select().from(agentTasks)
       .where(eq(agentTasks.status, "queued"))
       .orderBy(asc(agentTasks.queuePosition))
       .get();
@@ -412,7 +427,7 @@ export class DatabaseStorage implements IStorage {
   // ── Sessions ──
 
   async getSessions(): Promise<{ sessionId: string; taskCount: number; lastActivity: string }[]> {
-    const tasks = db.select().from(agentTasks).orderBy(desc(agentTasks.id)).all();
+    const tasks = _db.select().from(agentTasks).orderBy(desc(agentTasks.id)).all();
     const sessMap = new Map<string, { count: number; last: string }>();
     for (const t of tasks) {
       const sid = t.sessionId || "default";
@@ -435,7 +450,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSessionsByWorkspace(workspaceId: number): Promise<{ sessionId: string; taskCount: number; lastActivity: string }[]> {
-    const tasks = db.select().from(agentTasks)
+    const tasks = _db.select().from(agentTasks)
       .where(eq(agentTasks.workspaceId, workspaceId))
       .orderBy(desc(agentTasks.id))
       .all();
@@ -463,47 +478,47 @@ export class DatabaseStorage implements IStorage {
   // ── Logs ──
 
   async getLogsForTask(taskId: number): Promise<AgentLog[]> {
-    return db.select().from(agentLogs).where(eq(agentLogs.taskId, taskId)).all();
+    return _db.select().from(agentLogs).where(eq(agentLogs.taskId, taskId)).all();
   }
 
   async getLogsForSession(sessionId: string): Promise<AgentLog[]> {
-    return db.select().from(agentLogs)
+    return _db.select().from(agentLogs)
       .where(eq(agentLogs.sessionId, sessionId))
       .orderBy(desc(agentLogs.id))
       .all();
   }
 
   async addLog(log: InsertAgentLog): Promise<AgentLog> {
-    return db.insert(agentLogs).values(log).returning().get();
+    return _db.insert(agentLogs).values(log).returning().get();
   }
 
   // ── Step snapshots ──
 
   async getStepSnapshots(taskId: number): Promise<StepSnapshot[]> {
-    return db.select().from(stepSnapshots)
+    return _db.select().from(stepSnapshots)
       .where(eq(stepSnapshots.taskId, taskId))
       .orderBy(asc(stepSnapshots.stepIndex))
       .all();
   }
 
   async addStepSnapshot(snapshot: InsertStepSnapshot): Promise<StepSnapshot> {
-    return db.insert(stepSnapshots).values(snapshot).returning().get();
+    return _db.insert(stepSnapshots).values(snapshot).returning().get();
   }
 
   // ── Export ──
 
   async exportSession(workspaceId: number, sessionId: string): Promise<any> {
-    const tasks = db.select().from(agentTasks)
+    const tasks = _db.select().from(agentTasks)
       .where(and(eq(agentTasks.workspaceId, workspaceId), eq(agentTasks.sessionId, sessionId)))
       .orderBy(desc(agentTasks.id))
       .all();
 
-    const logs = db.select().from(agentLogs)
+    const logs = _db.select().from(agentLogs)
       .where(eq(agentLogs.sessionId, sessionId))
       .orderBy(asc(agentLogs.id))
       .all();
 
-    const tabs = db.select().from(sessionTabs)
+    const tabs = _db.select().from(sessionTabs)
       .where(and(eq(sessionTabs.workspaceId, workspaceId), eq(sessionTabs.sessionId, sessionId)))
       .orderBy(asc(sessionTabs.id))
       .all();
@@ -514,34 +529,19 @@ export class DatabaseStorage implements IStorage {
       exportedAt: new Date().toISOString(),
       workspace: ws ? { id: ws.id, name: ws.name } : null,
       sessionId,
-      tasks: tasks.map(t => ({
-        id: t.id,
-        title: t.title,
-        targetUrl: t.targetUrl,
-        goal: t.goal,
-        status: t.status,
-        plan: t.plan,
-        createdAt: t.createdAt,
+      tasks: tasks.map((t: AgentTask) => ({
+        id: t.id, title: t.title, targetUrl: t.targetUrl, goal: t.goal,
+        status: t.status, plan: t.plan, createdAt: t.createdAt,
       })),
-      logs: logs.map(l => ({
-        id: l.id,
-        taskId: l.taskId,
-        stepIndex: l.stepIndex,
-        action: l.action,
-        detail: l.detail,
-        status: l.status,
-        timestamp: l.timestamp,
+      logs: logs.map((l: AgentLog) => ({
+        id: l.id, taskId: l.taskId, stepIndex: l.stepIndex,
+        action: l.action, detail: l.detail, status: l.status, timestamp: l.timestamp,
       })),
-      tabs: tabs.map(t => ({
-        id: t.id,
-        label: t.label,
-        url: t.url,
-        isActive: t.isActive,
-      })),
+      tabs: tabs.map((t: SessionTab) => ({ id: t.id, label: t.label, url: t.url, isActive: t.isActive })),
       summary: {
         totalTasks: tasks.length,
-        completedTasks: tasks.filter(t => t.status === "completed").length,
-        errorTasks: tasks.filter(t => t.status === "error").length,
+        completedTasks: tasks.filter((t: AgentTask) => t.status === "completed").length,
+        errorTasks: tasks.filter((t: AgentTask) => t.status === "error").length,
         totalLogs: logs.length,
         totalTabs: tabs.length,
       },
@@ -549,15 +549,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async exportTask(taskId: number): Promise<any> {
-    const task = db.select().from(agentTasks).where(eq(agentTasks.id, taskId)).get();
+    const task = _db.select().from(agentTasks).where(eq(agentTasks.id, taskId)).get();
     if (!task) return null;
 
-    const logs = db.select().from(agentLogs)
+    const logs = _db.select().from(agentLogs)
       .where(eq(agentLogs.taskId, taskId))
       .orderBy(asc(agentLogs.id))
       .all();
 
-    const steps = db.select().from(stepSnapshots)
+    const steps = _db.select().from(stepSnapshots)
       .where(eq(stepSnapshots.taskId, taskId))
       .orderBy(asc(stepSnapshots.stepIndex))
       .all();
@@ -565,38 +565,22 @@ export class DatabaseStorage implements IStorage {
     return {
       exportedAt: new Date().toISOString(),
       task: {
-        id: task.id,
-        workspaceId: task.workspaceId,
-        sessionId: task.sessionId,
-        title: task.title,
-        targetUrl: task.targetUrl,
-        goal: task.goal,
-        status: task.status,
-        plan: task.plan,
-        createdAt: task.createdAt,
+        id: task.id, workspaceId: task.workspaceId, sessionId: task.sessionId,
+        title: task.title, targetUrl: task.targetUrl, goal: task.goal,
+        status: task.status, plan: task.plan, createdAt: task.createdAt,
       },
-      logs: logs.map(l => ({
-        id: l.id,
-        stepIndex: l.stepIndex,
-        action: l.action,
-        detail: l.detail,
-        status: l.status,
-        timestamp: l.timestamp,
+      logs: logs.map((l: AgentLog) => ({
+        id: l.id, stepIndex: l.stepIndex, action: l.action,
+        detail: l.detail, status: l.status, timestamp: l.timestamp,
       })),
-      steps: steps.map(s => ({
-        stepIndex: s.stepIndex,
-        phase: s.phase,
-        action: s.action,
-        status: s.status,
-        detail: s.detail,
-        timestamp: s.timestamp,
-        hasScreenshot: !!s.screenshotBase64,
-        snapshotJson: s.snapshotJson,
+      steps: steps.map((s: StepSnapshot) => ({
+        stepIndex: s.stepIndex, phase: s.phase, action: s.action,
+        status: s.status, detail: s.detail, timestamp: s.timestamp,
+        hasScreenshot: !!s.screenshotBase64, snapshotJson: s.snapshotJson,
       })),
       summary: {
-        totalSteps: steps.length,
-        totalLogs: logs.length,
-        hasErrors: logs.some(l => l.status === "error"),
+        totalSteps: steps.length, totalLogs: logs.length,
+        hasErrors: logs.some((l: AgentLog) => l.status === "error"),
       },
     };
   }
@@ -604,22 +588,22 @@ export class DatabaseStorage implements IStorage {
   // ── Kwork Leads ──
 
   async getKworkLeads(): Promise<KworkLead[]> {
-    return db.select().from(kworkLeads).orderBy(desc(kworkLeads.id)).all();
+    return _db.select().from(kworkLeads).orderBy(desc(kworkLeads.id)).all();
   }
 
   async getKworkLead(id: number): Promise<KworkLead | undefined> {
-    return db.select().from(kworkLeads).where(eq(kworkLeads.id, id)).get();
+    return _db.select().from(kworkLeads).where(eq(kworkLeads.id, id)).get();
   }
 
   async createKworkLead(lead: Omit<KworkLead, "id" | "createdAt"> & { fitScore: number; recommendation: string; whyFits: string; keyRisks: string }): Promise<KworkLead> {
-    return db.insert(kworkLeads).values({
+    return _db.insert(kworkLeads).values({
       ...lead,
       createdAt: new Date().toISOString(),
     }).returning().get();
   }
 
   async updateKworkLead(id: number, updates: Partial<KworkLead>): Promise<KworkLead | undefined> {
-    return db.update(kworkLeads)
+    return _db.update(kworkLeads)
       .set(updates)
       .where(eq(kworkLeads.id, id))
       .returning()
@@ -627,11 +611,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteKworkLead(id: number): Promise<void> {
-    db.delete(kworkLeads).where(eq(kworkLeads.id, id)).run();
+    _db.delete(kworkLeads).where(eq(kworkLeads.id, id)).run();
   }
 
   async seedKworkLeads(): Promise<void> {
-    const existing = db.select().from(kworkLeads).all();
+    const existing = _db.select().from(kworkLeads).all();
     if (existing.length > 0) return; // Already seeded
 
     const now = new Date().toISOString();
@@ -807,7 +791,7 @@ export class DatabaseStorage implements IStorage {
     ];
 
     for (const seed of seeds) {
-      db.insert(kworkLeads).values({
+      _db.insert(kworkLeads).values({
         ...seed,
         createdAt: new Date().toISOString(),
       }).run();
@@ -815,4 +799,21 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
+// ─── Storage singleton — SQLite or MemoryStorage ──────────────────────────────
+//
+// _tryLoadSQLite() runs at module-init time. If it fails for ANY reason
+// (missing native binary, broken .node for wrong platform, missing file, etc.)
+// we fall back to MemoryStorage transparently so the server always starts.
+
+import { MemoryStorage } from "./storage-memory";
+
+export let storageMode: "sqlite" | "memory" = "memory";
+
+const _sqliteLoaded = _tryLoadSQLite();
+
+export const storage: IStorage = _sqliteLoaded
+  ? (() => { storageMode = "sqlite"; return new DatabaseStorage(); })()
+  : new MemoryStorage();
+
+// Export db for rare direct-DB usages (build scripts, etc.) — may be null in memory mode
+export const db = _db;

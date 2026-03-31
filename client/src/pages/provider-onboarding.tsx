@@ -18,6 +18,7 @@ import {
   DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
   EXAMPLE_LM_STUDIO_MODEL,
+  EXAMPLE_MINIMAX_MODEL,
 } from "@/lib/hosting-env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ type OnboardingStep =
   | "lmstudio"        // configure LM Studio
   | "apikey";         // pick cloud provider + enter key
 
-type CloudProvider = "openai_compatible" | "openai" | "anthropic" | "gemini";
+type CloudProvider = "openai_compatible" | "openai" | "anthropic" | "gemini" | "minimax";
 
 // ─── Cloud provider definitions ───────────────────────────────────────────────
 
@@ -67,6 +68,15 @@ const CLOUD_PROVIDERS: CloudProviderDef[] = [
     placeholder: "AIza…",
     keyDocsUrl: "https://aistudio.google.com/app/apikey",
     supportsModelList: true,
+  },
+  {
+    id: "minimax",
+    label: "MiniMax",
+    description: "MiniMax-M2.7, MiniMax-M2.5 — облачный API MiniMax (ОАИ-совместимый)",
+    placeholder: "mm-… или ваш MiniMax API key",
+    keyDocsUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+    supportsModelList: true,
+    modelListNote: "Если список не загрузился — введите вручную (например: MiniMax-M2.7).",
   },
   {
     id: "openai_compatible",
@@ -637,6 +647,7 @@ function ApiKeySetup({ onBack, onSaved }: { onBack: () => void; onSaved: () => v
                 selectedProvider === "openai" ? "gpt-4o, gpt-4-turbo…" :
                 selectedProvider === "anthropic" ? "claude-3-5-sonnet-20241022…" :
                 selectedProvider === "gemini" ? "gemini-1.5-pro…" :
+                selectedProvider === "minimax" ? EXAMPLE_MINIMAX_MODEL + ", MiniMax-M2.5…" :
                 "gpt-3.5-turbo, custom-model…"
               }
               className="h-11 text-sm font-mono"
@@ -733,7 +744,7 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
                   OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
                 </p>
                 <div className="flex flex-wrap gap-1 mt-2">
-                  {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
+                  {["OpenAI", "Anthropic", "Gemini", "MiniMax", "OpenAI Compatible"].map(p => (
                     <span key={p} className="text-[10px] bg-muted/50 border border-border/50 rounded px-1.5 py-0.5 text-muted-foreground/70">
                       {p}
                     </span>
@@ -844,7 +855,7 @@ function ChooseScreen({ onSelect }: { onSelect: (step: OnboardingStep) => void }
                   OpenAI, Anthropic, Gemini или OpenAI-совместимый сервер. Работает из любого места.
                 </p>
                 <div className="flex flex-wrap gap-1 mt-2">
-                  {["OpenAI", "Anthropic", "Gemini", "OpenAI Compatible"].map(p => (
+                  {["OpenAI", "Anthropic", "Gemini", "MiniMax", "OpenAI Compatible"].map(p => (
                     <span key={p} className="text-[10px] bg-muted/50 border border-border/50 rounded px-1.5 py-0.5 text-muted-foreground/70">
                       {p}
                     </span>

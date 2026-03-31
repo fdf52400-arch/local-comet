@@ -9,8 +9,8 @@ Local Comet подключается к **вашим локальным моде
 | Что нужно | Версия |
 |---|---|
 | Node.js | 18 LTS или новее — [nodejs.org](https://nodejs.org) |
-| Ollama (опционально) | запущен на `http://localhost:11436` |
-| LM Studio (опционально) | Local Server запущен на `http://localhost:1234` |
+| Ollama (опционально) | запущен на `http://127.0.0.1:11436` |
+| LM Studio (опционально) | Local Server запущен на `http://192.168.31.168:1234` |
 
 Хотя бы один из провайдеров (Ollama или LM Studio) должен быть запущен до старта Local Comet.
 
@@ -46,10 +46,40 @@ http://localhost:5051
 
 ---
 
+## Хранилище данных
+
+Приложение **автоматически** выбирает доступный способ хранения:
+
+| Сообщение при запуске | Режим | Данные |
+|---|---|---|
+| `Storage: SQLite (data.db)` | SQLite | Сохраняются в `data.db` между запусками |
+| `Storage: in-memory mode` | In-memory | Данные сбрасываются при перезапуске |
+
+**Режим in-memory** включается автоматически, если `better-sqlite3` недоступен
+(например, при запуске с Linux-собранными `node_modules` на Windows).
+
+Приложение работает полностью корректно в обоих режимах.
+
+### Как включить SQLite-хранилище
+
+Выполните **один раз** в папке проекта:
+
+```powershell
+npm rebuild better-sqlite3
+```
+
+После этого при следующем запуске консоль покажет `Storage: SQLite (data.db)`.
+
+> Если `npm rebuild` завершается с ошибкой — установите **Build Tools for Visual Studio**
+> или **windows-build-tools** (`npm install -g windows-build-tools`) и повторите.
+
+---
+
 ## Что делает скрипт
 
 - Проверяет наличие Node.js.
 - Устанавливает зависимости (`npm install`) при первом запуске.
+- Проверяет `better-sqlite3` и предупреждает, если работает in-memory режим.
 - Запускает собранный сервер (`dist/index.cjs`) на порту 5051.
 - Если `dist/index.cjs` отсутствует — запускает `npm run build` автоматически (только в `.ps1`).
 
@@ -61,8 +91,8 @@ http://localhost:5051
 
 | Провайдер | Base URL | Port |
 |---|---|---|
-| Ollama | `http://localhost` | `11436` |
-| LM Studio | `http://localhost` | `1234` |
+| Ollama | `http://127.0.0.1` | `11436` |
+| LM Studio | `http://192.168.31.168` | `1234` |
 
 Нажмите **Check connection** — статус должен стать **Available**.  
 Затем выберите нужную модель из списка и сохраните.
@@ -72,16 +102,16 @@ http://localhost:5051
 ## Проверка: видит ли Local Comet Ollama и LM Studio
 
 **Через браузер** (не требует curl):
-- Ollama: откройте `http://localhost:11436/api/tags` — должен вернуть JSON со списком моделей.
-- LM Studio: откройте `http://localhost:1234/v1/models` — должен вернуть JSON со списком моделей.
+- Ollama: откройте `http://127.0.0.1:11436/api/tags` — должен вернуть JSON со списком моделей.
+- LM Studio: откройте `http://192.168.31.168:1234/v1/models` — должен вернуть JSON со списком моделей.
 
 **Через curl (PowerShell):**
 ```powershell
 # Ollama
-curl http://localhost:11436/api/tags
+curl http://127.0.0.1:11436/api/tags
 
 # LM Studio
-curl http://localhost:1234/v1/models
+curl http://192.168.31.168:1234/v1/models
 ```
 
 Если страница не открывается — провайдер не запущен. Запустите Ollama или LM Studio и попробуйте снова.
@@ -107,6 +137,7 @@ npm run build
 | `dist/index.cjs not found` | Проект не собран | Запустить `npm run build` |
 | `ECONNREFUSED 11436` | Ollama не запущен | Запустить Ollama |
 | `ECONNREFUSED 1234` | LM Studio не запущен | Включить Local Server в LM Studio |
+| `Storage: in-memory mode` | better-sqlite3 не загрузился | Данные работают, но не сохраняются. Запустить `npm rebuild better-sqlite3` для исправления |
 
 ---
 

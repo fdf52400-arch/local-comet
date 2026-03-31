@@ -22,6 +22,7 @@ import {
   DEFAULT_OLLAMA_PORT, DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_LM_STUDIO_PORT, DEFAULT_LM_STUDIO_BASE_URL,
   EXAMPLE_LM_STUDIO_MODEL,
+  MINIMAX_BASE_URL, EXAMPLE_MINIMAX_MODEL,
 } from "@/lib/hosting-env";
 
 // ─── Provider definitions ─────────────────────────────────────────────────────
@@ -135,6 +136,22 @@ const PROVIDER_DEFS: ProviderDef[] = [
     category: "cloud",
     supportsModelList: true,
     modelListNote: "Список моделей загружается с вашего сервера (/v1/models).",
+  },
+  {
+    id: "minimax",
+    label: "MiniMax",
+    icon: Cloud,
+    description: "MiniMax-M2.7, MiniMax-M2.5 — облачный API MiniMax (ОАИ-совместимый)",
+    defaultBaseUrl: MINIMAX_BASE_URL,
+    defaultPort: null,
+    hasPort: false,
+    hasApiKey: true,
+    hasBaseUrl: false,
+    modelPlaceholder: EXAMPLE_MINIMAX_MODEL + ", MiniMax-M2.5…",
+    category: "cloud",
+    keyDocsUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+    supportsModelList: true,
+    modelListNote: "Если список не загрузился — введите название вручную (например: MiniMax-M2.7).",
   },
 ];
 
