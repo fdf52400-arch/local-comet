@@ -114,14 +114,26 @@ app.use((req, res, next) => {
   // It is the only port that is not firewalled.
   // Prefer LOCAL_COMET_PORT, then PORT, default 5051
   const port = parseInt(process.env.LOCAL_COMET_PORT || process.env.PORT || "5051", 10);
+
+  // HOST env var controls the bind address.
+  // Defaults to 127.0.0.1 for local/Windows bootstrap (avoids ENOTSUP on SO_REUSEPORT
+  // and Windows firewall prompts when binding 0.0.0.0).
+  // Set HOST=0.0.0.0 explicitly when you need network-accessible binding (Linux/macOS servers).
+  const host = process.env.HOST ?? "127.0.0.1";
+
+  // reusePort is not supported on Windows (causes ENOTSUP). Enable only on platforms
+  // where it is available, or when explicitly opted-in via REUSE_PORT=1.
+  const isWindows = process.platform === "win32";
+  const reusePort = !isWindows || process.env.REUSE_PORT === "1";
+
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
-      reusePort: true,
+      host,
+      ...(reusePort ? { reusePort: true } : {}),
     },
     () => {
-      log(`serving on port ${port}`);
+      log(`serving on port ${port} (host: ${host})`);
     },
   );
 })();

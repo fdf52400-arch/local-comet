@@ -43,7 +43,10 @@ try {
   }
 } catch {}
 
-$launchCmd = "Set-Location '$repoPath'; node .\dist\index.cjs"
+# Bind to 127.0.0.1 by default for local Windows launch.
+# This avoids the ENOTSUP error from SO_REUSEPORT and Windows firewall prompts.
+# Change HOST to 0.0.0.0 only if you need LAN access from other machines.
+$launchCmd = "Set-Location '$repoPath'; `$env:HOST='127.0.0.1'; node .\dist\index.cjs"
 Write-Host 'Starting Local Comet...' -ForegroundColor Green
 Start-Process powershell -ArgumentList '-NoExit', '-Command', $launchCmd
 
