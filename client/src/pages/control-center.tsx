@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { Link } from "wouter";
-import { parseIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
+import { parseIntent, isCodeIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
 import {
@@ -805,12 +805,25 @@ function TerminalPanel({ sessionId }: { sessionId: string }) {
     try {
       const res = await apiRequest("POST", "/api/terminal/exec", { command: cmd, sessionId, timeout: 15000 });
       const data = await res.json();
-      setHistory(prev => [...prev, { cmd, out: data.stdout || "", err: data.stderr || "", code: data.exitCode, ms: data.durationMs || 0, blocked: data.blocked }]);
+      if (!res.ok) {
+        // Server returned error — show it as a terminal error entry
+        setHistory(prev => [...prev, {
+          cmd,
+          out: "",
+          err: data.error || `Ошибка сервера ${res.status}`,
+          code: 1,
+          ms: 0,
+          blocked: false,
+        }]);
+      } else {
+        setHistory(prev => [...prev, { cmd, out: data.stdout || "", err: data.stderr || "", code: data.exitCode, ms: data.durationMs || 0, blocked: data.blocked }]);
+      }
       setTimeout(() => outputRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
       if (cmd.startsWith("ls") || cmd.startsWith("mkdir") || cmd.startsWith("touch") || cmd.startsWith("rm") || cmd.startsWith("cp") || cmd.startsWith("mv")) {
         queryClient.invalidateQueries({ queryKey: ["/api/terminal/files", sessionId] });
       }
     } catch (err: any) {
+      setHistory(prev => [...prev, { cmd, out: "", err: `Ошибка: ${err.message}`, code: 1, ms: 0, blocked: false }]);
       toast({ title: "Ошибка терминала", description: err.message, variant: "destructive" });
     } finally { setIsRunning(false); }
   };
@@ -920,21 +933,57 @@ echo "Директория: $(pwd)"
 ls -la 2>/dev/null | head -10` },
 };
 
-function SandboxPanel({ sessionId }: { sessionId: string }) {
+interface SandboxInjection {
+  code: string;
+  lang: "javascript" | "python" | "bash";
+  result?: { output: string; error: string; exitCode: number | null; durationMs: number; language: string } | null;
+  token: number; // increment to re-apply same code
+}
+
+function SandboxPanel({ sessionId, injection }: { sessionId: string; injection?: SandboxInjection | null }) {
   const { toast } = useToast();
   const [lang, setLang] = useState<"javascript" | "python" | "bash">("javascript");
   const [code, setCode] = useState(CODE_EXAMPLES.javascript.code);
   const [result, setResult] = useState<{output: string; error: string; exitCode: number | null; durationMs: number; language: string} | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
+  // Apply injected code/lang/result when a new injection arrives
+  useEffect(() => {
+    if (!injection) return;
+    setLang(injection.lang);
+    setCode(injection.code);
+    if (injection.result !== undefined) {
+      setResult(injection.result ?? null);
+    }
+  }, [injection?.token]);
+
   const runCode = async () => {
     if (!code.trim()) return;
     setIsRunning(true);
+    setResult(null);
     try {
       const res = await apiRequest("POST", "/api/sandbox/run", { code, language: lang, sessionId, timeout: 15000 });
       const data = await res.json();
-      setResult(data);
+      if (!res.ok) {
+        // API returned error JSON
+        setResult({
+          output: "",
+          error: data.error || `Ошибка сервера: ${res.status}`,
+          exitCode: 1,
+          durationMs: 0,
+          language: lang,
+        });
+      } else {
+        setResult(data);
+      }
     } catch (err: any) {
+      setResult({
+        output: "",
+        error: `Ошибка выполнения: ${err.message}`,
+        exitCode: 1,
+        durationMs: 0,
+        language: lang,
+      });
       toast({ title: "Ошибка sandbox", description: err.message, variant: "destructive" });
     } finally { setIsRunning(false); }
   };
@@ -1000,9 +1049,11 @@ function SandboxPanel({ sessionId }: { sessionId: string }) {
         <div className="border-t border-border px-2 py-1.5 bg-black/30 max-h-48 overflow-auto shrink-0" data-testid="sandbox-output">
           <div className="flex items-center gap-2 mb-1.5">
             <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
-              result.exitCode === 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+              result.exitCode === 0 ? "bg-emerald-500/10 text-emerald-400" :
+              result.exitCode === null ? "bg-muted/30 text-muted-foreground" :
+              "bg-red-500/10 text-red-400"
             }`}>
-              exit {result.exitCode}
+              exit {result.exitCode ?? "?"}
             </span>
             <span className="text-[9px] text-muted-foreground">{result.durationMs}ms</span>
             <span className="text-[9px] text-muted-foreground capitalize">{result.language}</span>
@@ -1170,6 +1221,11 @@ export default function ControlCenter() {
   const [replayTaskId, setReplayTaskId] = useState<number | null>(null);
   const [activeMission, setActiveMission] = useState<ActiveMission | null>(null);
   const [showAdvancedTools, setShowAdvancedTools] = useState(false);
+
+  // --- Sandbox injection state (for code intent routing) ---
+  const [sandboxInjection, setSandboxInjection] = useState<SandboxInjection | null>(null);
+  // Monotonic counter for sandbox injection tokens — prevents Date.now() collisions
+  const sandboxTokenRef = useRef(0);
 
   // --- Command input ---
   const [commandValue, setCommandValue] = useState("");
@@ -1546,13 +1602,82 @@ export default function ControlCenter() {
     },
   });
 
+  // ── Code intent handler: route to local sandbox, NOT browser agent ───────
+  const handleCodeIntent = useCallback(async (query: string) => {
+    const intent = parseIntent(query);
+    const lang = (intent.codeLanguage === "typescript" ? "javascript" : (intent.codeLanguage ?? "python")) as "javascript" | "python" | "bash";
+
+    // Switch UI to sandbox immediately for instant feedback
+    setSidecarMode("sandbox");
+    if (!sidecarOpen) setSidecarOpen(true);
+
+    // Use monotonic counter to avoid Date.now() token collisions
+    const token = ++sandboxTokenRef.current;
+    setSandboxInjection({
+      code: `# Генерация кода для: ${query}\n# Пожалуйста, подождите...`,
+      lang,
+      result: null,
+      token,
+    });
+
+    try {
+      const res = await apiRequest("POST", "/api/computer/code", { query, sessionId: activeSession });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        const newToken = ++sandboxTokenRef.current;
+        setSandboxInjection({
+          code: data.code || "",
+          lang: (data.language === "typescript" ? "javascript" : (data.language || lang)) as "javascript" | "python" | "bash",
+          result: data.sandbox ? {
+            output: data.sandbox.output || "",
+            error: data.sandbox.error || "",
+            exitCode: data.sandbox.exitCode ?? null,
+            durationMs: data.sandbox.durationMs || 0,
+            language: data.language || lang,
+          } : null,
+          token: newToken,
+        });
+        toast({ title: "Код готов и выполнен", description: `Язык: ${data.language} | Выход: ${data.sandbox?.exitCode ?? "?"} | ${data.sandbox?.durationMs}ms` });
+      } else {
+        // API returned error — update injection to show error state
+        const errToken = ++sandboxTokenRef.current;
+        const errMsg = data.error || "Неизвестная ошибка";
+        setSandboxInjection({
+          code: `# Ошибка генерации кода\n# ${errMsg}`,
+          lang,
+          result: { output: "", error: errMsg, exitCode: 1, durationMs: 0, language: lang },
+          token: errToken,
+        });
+        toast({ title: "Ошибка генерации кода", description: errMsg, variant: "destructive" });
+      }
+    } catch (err: any) {
+      // Network/parse error — update injection to show error state
+      const errToken = ++sandboxTokenRef.current;
+      const errMsg = err.message || "Ошибка сети";
+      setSandboxInjection({
+        code: `# Ошибка code path\n# ${errMsg}`,
+        lang,
+        result: { output: "", error: errMsg, exitCode: 1, durationMs: 0, language: lang },
+        token: errToken,
+      });
+      toast({ title: "Ошибка code path", description: errMsg, variant: "destructive" });
+    }
+  }, [activeSession, sidecarOpen, setSidecarOpen, setSidecarMode, toast]);
+
   // ── CORE: Command Submit Handler (intent parsing) ──
   const handleCommandSubmit = useCallback(() => {
     const raw = commandValue.trim();
     if (!raw) return;
     setCommandValue("");
 
-    // All commands go through computerRunMutation —
+    // ── Code intent guard: route to local sandbox, skip browser agent ──
+    // This MUST run before computerRunMutation so code tasks never open Google/GitHub.
+    if (isCodeIntent(raw)) {
+      handleCodeIntent(raw);
+      return;
+    }
+
+    // Browser/agent tasks go through computerRunMutation —
     // this creates an agent task with a visible plan, resolves URL server-side,
     // and shows mission card with step-by-step execution.
     computerRunMutation.mutate({ query: raw, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
@@ -1566,15 +1691,22 @@ export default function ControlCenter() {
       // Fire-and-forget browser navigate for immediate visual feedback
       handleManualAction("navigate", { url: intent.url }).catch(() => {});
     }
-  }, [commandValue, maxSteps, activeSession, activeWorkspaceId, browsingHistory, handleManualAction, computerRunMutation]);
+  }, [commandValue, maxSteps, activeSession, activeWorkspaceId, browsingHistory, handleManualAction, computerRunMutation, handleCodeIntent]);
 
-  // Example command click — submit through the same autonomous flow
+  // Example command click — detect intent and route accordingly
   const handleExampleClick = useCallback((text: string) => {
     setCommandValue(text);
     // Small delay so the input shows the text before submitting
     setTimeout(() => {
-      computerRunMutation.mutate({ query: text, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
       setCommandValue("");
+
+      // ── Code intent guard: route to sandbox, skip browser agent ──
+      if (isCodeIntent(text)) {
+        handleCodeIntent(text);
+        return;
+      }
+
+      computerRunMutation.mutate({ query: text, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
       const intent = parseIntent(text);
       if ((intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search") && intent.url) {
         setTargetUrl(intent.url);
@@ -1583,7 +1715,7 @@ export default function ControlCenter() {
         handleManualAction("navigate", { url: intent.url }).catch(() => {});
       }
     }, 80);
-  }, [computerRunMutation, handleManualAction, activeSession, activeWorkspaceId, maxSteps, browsingHistory]);
+  }, [computerRunMutation, handleManualAction, activeSession, activeWorkspaceId, maxSteps, browsingHistory, handleCodeIntent]);
 
   const handleConfirm = (approved: boolean) => { if (confirmRequest) confirmMutation.mutate({ taskId: confirmRequest.taskId, approved }); };
   const handleReplay = (taskId: number) => { setReplayTaskId(taskId); };
@@ -1789,11 +1921,18 @@ export default function ControlCenter() {
                 const v = e.target.value;
                 setCommandValue(v);
                 if (v.trim().length > 2) {
-                  const intent = parseIntent(v.trim());
-                  if (intent.url && (intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search")) {
-                    setCommandHint(`→ ${intent.url}`);
+                  // Code intent takes priority in hint display
+                  if (isCodeIntent(v.trim())) {
+                    const intent = parseIntent(v.trim());
+                    const lang = intent.codeLanguage || "code";
+                    setCommandHint(`→ выполнить локально [${lang}]`);
                   } else {
-                    setCommandHint(null);
+                    const intent = parseIntent(v.trim());
+                    if (intent.url && (intent.type === "open_site" || intent.type === "navigate_url" || intent.type === "search")) {
+                      setCommandHint(`→ ${intent.url}`);
+                    } else {
+                      setCommandHint(null);
+                    }
                   }
                 } else {
                   setCommandHint(null);
@@ -2234,7 +2373,7 @@ export default function ControlCenter() {
 
               {/* === CODE SANDBOX MODE === */}
               {sidecarMode === "sandbox" && (
-                <SandboxPanel sessionId={activeSession} />
+                <SandboxPanel sessionId={activeSession} injection={sandboxInjection} />
               )}
             </div>
 

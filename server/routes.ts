@@ -22,7 +22,7 @@ import {
 import type { DemoScenario } from "@shared/schema";
 import { scoreKworkLead } from "@shared/kwork-scoring";
 
-const DEFAULT_MAX_STEPS = 10;
+const DEFAULT_MAX_STEPS = 15; // Increased: search tasks need navigate + dom_snapshot + fill_input + navigate + extract_text + find_links + summarize = 7+ steps
 
 const DEMO_SCENARIOS: DemoScenario[] = [
   {
@@ -910,11 +910,63 @@ export async function registerRoutes(
    * Unlike /api/agent/run which requires explicit url + goal,
    * this endpoint handles the full "user types → agent acts" flow.
    */
+  /**
+   * POST /api/computer/code
+   * Body: { query: string, sessionId?: string }
+   *
+   * Handles code-writing / code-running requests via the local sandbox.
+   * The response includes the generated code template and sandbox execution result.
+   * This is the "local code path" — no browser is opened.
+   */
+  app.post("/api/computer/code", async (req, res) => {
+    try {
+      const { query, sessionId } = req.body;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Требуется query" });
+      }
+      const sid = sessionId || `session-${Date.now()}`;
+      const lang = detectCodeLanguage(query);
+
+      const lower = query.toLowerCase();
+      let code = generateCodeTemplate(query, lower, lang);
+
+      // Run the generated code in the sandbox
+      const sandboxResult = await runCodeSandbox(code, lang, sid, 15_000);
+
+      res.json({
+        ok: true,
+        queryType: "code_task",
+        language: lang,
+        code,
+        sessionId: sid,
+        sandbox: sandboxResult,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/computer/run", async (req, res) => {
     try {
       const { query, sessionId, workspaceId, maxSteps } = req.body;
       if (!query || typeof query !== "string") {
         return res.status(400).json({ error: "Требуется query" });
+      }
+
+      // ── Code intent guard — MUST be checked BEFORE Chromium probe ──────────
+      // If the query is a code/programming request, short-circuit to local sandbox
+      // and never open a browser or navigate to Google/GitHub.
+      if (isServerCodeIntent(query)) {
+        const sid = sessionId || `session-${Date.now()}`;
+        const lang = detectCodeLanguage(query);
+        return res.json({
+          ok: true,
+          queryType: "code_task",
+          routedTo: "sandbox",
+          language: lang,
+          sessionId: sid,
+          message: "Запрос перенаправлен в sandbox — используйте вкладку Code.",
+        });
       }
 
       // Fast-fail: reject browser tasks when Chromium binary is missing
@@ -1418,6 +1470,329 @@ ${keyRisks.length > 0 ? `
   return httpServer;
 }
 
+// ── Server-side code intent detection (mirrors frontend intent-parser) ────────
+
+/** Patterns that signal a code-writing / code-running request */
+const SERVER_CODE_WRITE_PATTERNS = [
+  /(?:напиши|написать|создай|создать|сгенерируй|сгенерировать|сделай|сделать)\s+(?:\S+\s+)*(?:код|скрипт|программ[уа]|функци[юя]|класс|алгоритм|модуль|утилит[уа])/i,
+  /(?:write|create|generate|make|build)\s+(?:\S+\s+)*(?:code|script|function|program|class|module|algorithm)/i,
+  /(?:запусти|запустить|выполни|выполнить|прогони|прогнать|run|execute|exec)\s+(?:\S+\s+)*(?:код|скрипт|программ[уа]|code|script)/i,
+  /(?:напиши|написать|создай|write|create|generate)\s+(?:на\s+)?(?:python|питон|javascript|js|typescript|ts|bash|node|nodejs)/i,
+  /(?:python|питон|javascript|js|typescript|ts|bash|node\.?js)\s+(?:код|скрипт|программ[уа]|code|script|program)/i,
+  /(?:напиши|write)\s+.{0,60}(?:и\s+)?(?:запусти|run|выполни|execute)/i,
+  // «напиши python код hello world» / «напиши python hello world»
+  /(?:напиши|написать|создай|сделай|write|create|generate|make)\s+(?:python|питон|javascript|js|typescript|bash|node)\s+/i,
+  // Pure language invocations: "python hello world"
+  /^(?:python|питон|javascript|js|bash)\s+/i,
+];
+
+const SERVER_CODE_RUN_ONLY_PATTERNS = [
+  /(?:запусти|запустить|выполни|выполнить|прогони|run|execute|exec)\s+[\w./\\]+\.(?:py|js|ts|sh|bash)/i,
+  /(?:запусти|run|execute)\s+(?:этот\s+)?(?:код|code|следующий)/i,
+];
+
+/** Returns true if the query is a code / programming intent */
+function isServerCodeIntent(query: string): boolean {
+  for (const pat of SERVER_CODE_WRITE_PATTERNS) {
+    if (pat.test(query)) return true;
+  }
+  for (const pat of SERVER_CODE_RUN_ONLY_PATTERNS) {
+    if (pat.test(query)) return true;
+  }
+  return false;
+}
+
+/** Detect programming language from query text */
+function detectCodeLanguage(text: string): "python" | "javascript" | "typescript" | "bash" {
+  const lower = text.toLowerCase();
+  if (/\bpython\b|\bпитон\b|\.py\b/.test(lower)) return "python";
+  if (/\btypescript\b|\bts\b|\.ts\b/.test(lower)) return "typescript";
+  if (/\bjavascript\b|\bjs\b|\.js\b|\bnode\.?js\b/.test(lower)) return "javascript";
+  if (/\bbash\b|\bshell\b|\.sh\b/.test(lower)) return "bash";
+  // Default to Python for generic code requests
+  return "python";
+}
+
+/**
+ * Generate a runnable starter code template from a natural language query.
+ * Covers common algorithm, data, utility and file I/O requests in RU + EN.
+ * Falls back to a meaningful skeleton (not a dummy result=42) for generic requests.
+ */
+function generateCodeTemplate(query: string, lower: string, lang: "python" | "javascript" | "typescript" | "bash"): string {
+  if (lang === "python") {
+    if (/hello.?world|привет.?мир/i.test(lower)) {
+      return 'print("Hello, World!")';
+    }
+    if (/fibonacci|фибоначчи/i.test(lower)) {
+      return `def fibonacci(n):
+    a, b = 0, 1
+    for _ in range(n):
+        print(a, end=" ")
+        a, b = b, a + b
+    print()
+
+fibonacci(10)`;
+    }
+    if (/factorial|факториал/i.test(lower)) {
+      return `def factorial(n):
+    return 1 if n <= 1 else n * factorial(n - 1)
+
+for i in range(1, 11):
+    print(f"{i}! = {factorial(i)}")`;
+    }
+    if (/sort|сортировк|sorted|сортиров/i.test(lower)) {
+      return `data = [5, 2, 8, 1, 9, 3, 7, 4, 6]
+print("Исходный список:", data)
+data_sorted = sorted(data)
+print("После сортировки:", data_sorted)
+# reverse
+print("По убыванию:", sorted(data, reverse=True))`;
+    }
+    if (/\bслов\b|word.?count|подсчёт.?слов|count.?word/i.test(lower)) {
+      return `text = "Это пример строки для подсчёта слов в тексте"
+words = text.split()
+word_count = len(words)
+print(f"Текст: '{text}'")
+print(f"Количество слов: {word_count}")
+
+# Frequency count
+from collections import Counter
+freq = Counter(words)
+print("\\nЧастота слов:")
+for word, count in freq.most_common():
+    print(f"  '{word}': {count}")`;
+    }
+    if (/prime|простых|простые|простое/i.test(lower)) {
+      return `def is_prime(n):
+    if n < 2: return False
+    for i in range(2, int(n**0.5) + 1):
+        if n % i == 0: return False
+    return True
+
+primes = [n for n in range(2, 50) if is_prime(n)]
+print("Простые числа до 50:", primes)
+print(f"Всего: {len(primes)}")`;
+    }
+    if (/reverse|разворот|реверс|обратн/i.test(lower)) {
+      return `text = "Hello, World!"
+reversed_text = text[::-1]
+print(f"Исходная строка: '{text}'")
+print(f"Развёрнутая строка: '{reversed_text}'")
+
+numbers = [1, 2, 3, 4, 5]
+print(f"Исходный список: {numbers}")
+print(f"Развёрнутый список: {numbers[::-1]}")`;
+    }
+    if (/dict|словарь|dictionary|json/i.test(lower)) {
+      return `import json
+
+data = {
+    "name": "Local Comet",
+    "version": "0.6",
+    "features": ["browser", "terminal", "sandbox"],
+    "active": True
+}
+
+print("Словарь:", data)
+print("\\nСериализация в JSON:")
+print(json.dumps(data, ensure_ascii=False, indent=2))
+
+# Access
+print("\\nName:", data["name"])
+print("Features count:", len(data["features"]))`;
+    }
+    if (/file|файл|read|write|записать|прочитать/i.test(lower)) {
+      return `import os
+
+# Запись в файл
+filename = "test_output.txt"
+with open(filename, "w", encoding="utf-8") as f:
+    f.write("Первая строка\\n")
+    f.write("Вторая строка\\n")
+    f.write("Третья строка\\n")
+print(f"Файл '{filename}' записан")
+
+# Чтение из файла
+with open(filename, "r", encoding="utf-8") as f:
+    content = f.read()
+print("Содержимое файла:")
+print(content)
+
+# Удаление
+os.remove(filename)
+print(f"Файл '{filename}' удалён")`;
+    }
+    if (/list|список|array|массив|filter|map|reduce/i.test(lower)) {
+      return `numbers = list(range(1, 11))
+print("Список:", numbers)
+
+# map
+squares = list(map(lambda x: x**2, numbers))
+print("Квадраты:", squares)
+
+# filter
+evens = list(filter(lambda x: x % 2 == 0, numbers))
+print("Чётные:", evens)
+
+# sum / max / min
+print(f"Сумма: {sum(numbers)}, Max: {max(numbers)}, Min: {min(numbers)}")`;
+    }
+    if (/class|класс|oop|объект/i.test(lower)) {
+      return `class Animal:
+    def __init__(self, name: str, sound: str):
+        self.name = name
+        self.sound = sound
+
+    def speak(self):
+        return f"{self.name} говорит: {self.sound}!"
+
+    def __repr__(self):
+        return f"Animal(name={self.name!r})"
+
+# Создание объектов
+dog = Animal("Собака", "Гав")
+cat = Animal("Кошка", "Мяу")
+
+print(dog.speak())
+print(cat.speak())
+print("Объекты:", [dog, cat])`;
+    }
+    // Generic Python fallback — useful skeleton that actually runs
+    return `# Python скрипт: ${query}
+import sys
+
+def main():
+    print("Запуск скрипта...")
+    
+    # Демонстрационный пример
+    data = [1, 2, 3, 4, 5]
+    result = sum(x ** 2 for x in data)
+    print(f"Демо: сумма квадратов {data} = {result}")
+    
+    # TODO: Реализуйте логику для: ${query}
+    print("\\nГотово!")
+
+if __name__ == "__main__":
+    main()`;
+  }
+
+  if (lang === "javascript" || lang === "typescript") {
+    if (/hello.?world|привет/i.test(lower)) {
+      return 'console.log("Hello, World!");';
+    }
+    if (/fibonacci|фибоначчи/i.test(lower)) {
+      return `function fibonacci(n) {
+  let a = 0, b = 1;
+  const result = [];
+  for (let i = 0; i < n; i++) {
+    result.push(a);
+    [a, b] = [b, a + b];
+  }
+  return result;
+}
+
+console.log("Fibonacci(10):", fibonacci(10).join(" "));`;
+    }
+    if (/sort|сортировк|сортиров/i.test(lower)) {
+      return `const data = [5, 2, 8, 1, 9, 3, 7, 4, 6];
+console.log("Original:", data);
+const sorted = [...data].sort((a, b) => a - b);
+console.log("Sorted asc:", sorted);
+console.log("Sorted desc:", [...data].sort((a, b) => b - a));`;
+    }
+    if (/prime|простых|простые/i.test(lower)) {
+      return `function isPrime(n) {
+  if (n < 2) return false;
+  for (let i = 2; i <= Math.sqrt(n); i++) {
+    if (n % i === 0) return false;
+  }
+  return true;
+}
+
+const primes = Array.from({length: 50}, (_, i) => i + 2).filter(isPrime);
+console.log("Primes up to 50:", primes.join(", "));
+console.log("Count:", primes.length);`;
+    }
+    if (/fetch|request|http|api/i.test(lower)) {
+      return `// HTTP fetch example (Node.js 18+ built-in fetch)
+async function fetchData(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(\`HTTP \${res.status}\`);
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error("Fetch error:", err.message);
+    return null;
+  }
+}
+
+// Demo with a public API
+fetchData("https://httpbin.org/json")
+  .then(data => console.log("Response:", JSON.stringify(data, null, 2)))
+  .catch(err => console.error(err));`;
+    }
+    // Generic JS fallback
+    return `// Script: ${query}
+
+function main() {
+  console.log("Script started");
+
+  // Demo: array processing
+  const data = [1, 2, 3, 4, 5];
+  const result = data.reduce((acc, x) => acc + x * x, 0);
+  console.log(\`Sum of squares of [\${data}] = \${result}\`);
+
+  // TODO: implement logic for: ${query}
+  console.log("Done!");
+}
+
+main();`;
+  }
+
+  if (lang === "bash") {
+    if (/hello.?world|привет/i.test(lower)) {
+      return 'echo "Hello, World!"';
+    }
+    if (/list|файл|ls|dir/i.test(lower)) {
+      return `#!/bin/bash
+echo "=== Текущая директория ==="
+pwd
+echo ""
+echo "=== Содержимое ==="
+ls -la
+echo ""
+echo "=== Использование диска ==="
+df -h . 2>/dev/null || echo "(df недоступен)"`;
+    }
+    if (/process|процесс|pid|top/i.test(lower)) {
+      return `#!/bin/bash
+echo "=== Запущенные процессы (top 10 по CPU) ==="
+ps aux --sort=-%cpu 2>/dev/null | head -11 || ps aux | head -11
+echo ""
+echo "=== Память ==="
+free -h 2>/dev/null || echo "(free недоступен)"`;
+    }
+    // Generic bash fallback
+    return `#!/bin/bash
+# Script: ${query}
+set -e
+
+echo "=== Скрипт запущен ==="
+echo "Дата: $(date)"
+echo "Директория: $(pwd)"
+echo ""
+
+# TODO: реализуйте логику для: ${query}
+echo ""
+echo "=== Готово ==="`;
+  }
+
+  // Should never reach here, but safety fallback
+  return `print("Script: ${query}")`;
+}
+
+
 // ── Server-side intent resolution (mirrors frontend intent-parser) ────────────
 
 const KNOWN_SITES: Record<string, string> = {
@@ -1468,6 +1843,12 @@ function resolveComputerQuery(query: string): { url: string; goal: string } {
   const raw = query.trim();
   const lower = raw.toLowerCase();
 
+  // 0) Code intent guard — should never reach here due to /api/computer/run early return,
+  //    but included as belt-and-suspenders to prevent google fallback for code queries.
+  if (isServerCodeIntent(raw)) {
+    return { url: "", goal: raw };
+  }
+
   // 1) Search patterns: "найди в google X", "find on github X"
   const searchPatterns = [
     /^(?:найди|найти|поиск|ищи|искать|search|find|погугли|загугли)\s+(?:в|on|in|at)\s+(\S+)\s+(.+)$/i,
@@ -1490,7 +1871,30 @@ function resolveComputerQuery(query: string): { url: string; goal: string } {
     }
   }
 
-  // 2) Open patterns: "открой google", "open github"
+  // 2) Compound open+search patterns:
+  //    "открой google и найди X", "open youtube and find X", "зайди на гитхаб и найди X"
+  const compoundPatterns = [
+    /^(?:открой|открыть|зайди на|перейди на|go to|open|launch)\s+(\S+)\s+(?:и|and|&)\s+(?:найди|поиск|find|search)\s+(.+)$/i,
+    /^(?:открой|открыть|зайди на|перейди на|go to|open|launch)\s+(\S+)\s+(?:,\s*)?(?:найди|поищи|find|search)\s+(.+)$/i,
+  ];
+  for (const pat of compoundPatterns) {
+    const m = raw.match(pat);
+    if (m) {
+      const siteName = m[1].trim().toLowerCase();
+      const searchTerm = m[2].trim();
+      if (KNOWN_SITES[siteName] && searchTerm) {
+        // Navigate to the site but set goal to include search so agent continues
+        return { url: KNOWN_SITES[siteName], goal: `Найти: ${searchTerm}` };
+      }
+      // Also try search engine template directly
+      if (SEARCH_ENGINES[siteName] && searchTerm) {
+        const url = SEARCH_ENGINES[siteName].replace("{q}", encodeURIComponent(searchTerm));
+        return { url, goal: `Найти: ${searchTerm}` };
+      }
+    }
+  }
+
+  // 3) Open patterns: "открой google", "open github"
   const openPatterns = [
     /^(?:открой|открыть|зайди на|перейди на|go to|open|launch)\s+(?:сайт\s+)?(.+)$/i,
   ];
@@ -1508,30 +1912,32 @@ function resolveComputerQuery(query: string): { url: string; goal: string } {
     }
   }
 
-  // 3) Bare known site
+  // 4) Bare known site
   if (KNOWN_SITES[lower]) {
     return { url: KNOWN_SITES[lower], goal: `Открыть ${lower} и изучить страницу` };
   }
 
-  // 4) Bare URL
+  // 5) Bare URL
   if (URL_RE.test(raw)) {
     const u = raw.startsWith("http") ? raw : `https://${raw}`;
     return { url: u, goal: `Изучить страницу ${u}` };
   }
 
-  // 5) Anything with a recognizable site name + action (e.g. "посмотри что нового на habr")
+  // 6) Anything with a recognizable site name + action (e.g. "посмотри что нового на habr")
   for (const [name, url] of Object.entries(KNOWN_SITES)) {
     if (lower.includes(name)) {
       return { url, goal: raw };
     }
   }
 
-  // 6) Fallback: treat as general goal on Google search
+  // 7) Fallback: treat as general goal on Google search
   const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
   return { url: searchUrl, goal: raw };
 }
 
 function detectQueryType(query: string): string {
+  // Code intent must be checked first — before URL or search patterns
+  if (isServerCodeIntent(query)) return "code_task";
   const lower = query.toLowerCase();
   if (/найди|поиск|search|find/i.test(lower)) return "search";
   if (/открой|зайди|open|go to|launch/i.test(lower)) return "open_site";

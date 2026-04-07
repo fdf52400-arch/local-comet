@@ -10,7 +10,7 @@ import { broadcast } from "./event-bus";
 import { runAgentLoop, type AgentRunConfig, getSessionState, setSessionState, getSelectedElement } from "./agent-engine";
 import type { AgentTask } from "@shared/schema";
 
-const DEFAULT_MAX_STEPS = 10;
+const DEFAULT_MAX_STEPS = 15; // Increased: search tasks need navigate + dom_snapshot + fill + navigate + extract + links + summarize
 
 interface QueueConfig {
   maxSteps: number;
