@@ -2,11 +2,24 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 
-// Ensure hash location for router
-if (!window.location.hash || window.location.hash === "#") {
-  window.history.replaceState(null, "", window.location.pathname + "#/");
+// ── Hash-location bootstrap ──────────────────────────────────────────────────
+// Guarantee the router always starts on "/#/" regardless of how the browser
+// opened the page (plain root, query-param cache-bust, or explicit hash).
+// Guard: only touch the URL if we are on a real http(s) origin — avoids
+// no-op replaceState calls when the page is somehow loaded as about:blank.
+if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+  const hash = window.location.hash;
+  if (!hash || hash === "#") {
+    // Preserve any query string (e.g. ?v=cachebust) and append #/
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search + "#/",
+    );
+  }
 }
 
+// ── React mount ──────────────────────────────────────────────────────────────
 const root = document.getElementById("root");
 const boot = document.getElementById("boot-screen");
 if (root) {

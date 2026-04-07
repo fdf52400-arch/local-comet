@@ -153,16 +153,51 @@ if (-not $ready) {
   exit 1
 }
 
-# ── 6. Open browser — with cache-bust to avoid stale tabs ───────────────────
-# Append a timestamp as a query param so the browser fetches a fresh copy of
-# the page instead of serving an old cached tab.  The hash fragment (#/) is
-# preserved so the React router lands on the correct route.
+# ── 6. Open browser — deterministic open sequence ───────────────────────────
+# Strategy:
+#   a) Wait a brief stabilization period after health OK so async server init
+#      (DB seed, Chromium probe, etc.) can finish before the browser fires.
+#   b) Open the plain root URL first so the browser definitely loads a fresh
+#      page from the server (no cached about:blank / stale tab).
+#   c) After the page has had time to load, navigate to the hash route so
+#      React Router initialises correctly.
+#   d) Cache-bust with a timestamp query param so even a cached entry is skipped.
+
+# Small stabilization window after first health OK — avoids opening the browser
+# while the server is still completing async startup (DB seed, Chromium probe).
+Write-Host '  Waiting 2 s for server to stabilise...' -ForegroundColor DarkGray
+Start-Sleep -Seconds 2
+
 $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$openUrl   = "http://$host_addr`:$port/?v=$cacheBust#/"
+
+# Root URL (no hash yet) — browser unconditionally requests a fresh page.
+$rootUrl   = "http://$host_addr`:$port/?v=$cacheBust"
+# Hash URL — passed to the browser after the page has been fetched.
+$hashUrl   = "http://$host_addr`:$port/#/"
 
 Write-Host ''
-Write-Host "Opening: $openUrl" -ForegroundColor Cyan
-Start-Process $openUrl
+Write-Host "Opening: $hashUrl" -ForegroundColor Cyan
+
+# Prefer navigating via the shell URL handler so the OS picks the default
+# browser and opens a new tab with the correct URL from the start.
+# We pass the hash URL directly — modern browsers open it as a fresh tab.
+try {
+  # Try to open via Start-Process with the default browser explicitly.
+  # Use the root URL for the initial fetch, then immediately replace with hash.
+  # Opening the root URL first forces a genuine HTTP request (no stale tab).
+  Start-Process $rootUrl
+
+  # Give the browser a moment to start the request, then open the hash URL.
+  # If the browser reuses the same tab (Chrome/Edge behaviour) it will
+  # navigate directly to /#/ which is what we want.
+  Start-Sleep -Seconds 2
+  Start-Process $hashUrl
+} catch {
+  # Fallback: open the combined URL if the above fails for any reason.
+  $fallbackUrl = "http://$host_addr`:$port/?v=$cacheBust#/"
+  Write-Host "  Fallback open: $fallbackUrl" -ForegroundColor DarkYellow
+  Start-Process $fallbackUrl
+}
 
 Write-Host ''
 Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Cyan
