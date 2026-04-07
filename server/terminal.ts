@@ -6,7 +6,7 @@
  *  - Command timeout (default 10s, max 30s)
  *  - stdout/stderr capture
  *  - Blocked dangerous command list
- *  - Code sandbox: JS (node --eval), Python (python3 -c), Bash (bash -c)
+ *  - Code sandbox: JS (node --eval), Python (python3/python -c), Bash/Shell
  *
  * Security model (local-only MVP):
  *  - NOT safe for public internet deployment. For local use only.
@@ -24,6 +24,8 @@ const execAsync = promisify(exec);
 
 const SANDBOX_ROOT = path.join(os.tmpdir(), "local-comet-sandbox");
 
+const IS_WINDOWS = process.platform === "win32";
+
 // Commands that are always blocked regardless of context
 const BLOCKED_COMMANDS = [
   /^rm\s+-rf\s+\//, // rm -rf /
@@ -31,7 +33,7 @@ const BLOCKED_COMMANDS = [
   /^mkfs/,
   /^dd\s+if=\/dev\/zero/,
   /^:\(\){.*}\s*;/,  // fork bomb
-  />\s*\/dev\/(sd|hd|nvme|vda)/, // direct disk writes
+  />\\s*\/dev\/(sd|hd|nvme|vda)/, // direct disk writes
   /^chmod\s+-R\s+777\s+\//, // mass chmod /
 ];
 
@@ -43,6 +45,20 @@ function isBlocked(cmd: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Returns the platform-appropriate shell and its flag for executing a string command.
+ * Windows: cmd.exe /c
+ * Unix/macOS: /bin/bash -c (or /bin/sh -c as fallback)
+ */
+function getPlatformShell(): string {
+  if (IS_WINDOWS) {
+    return "cmd.exe";
+  }
+  // Prefer bash, fall back to sh (which is universally available on Unix)
+  const hasBash = fs.existsSync("/bin/bash");
+  return hasBash ? "/bin/bash" : "/bin/sh";
 }
 
 export function getSandboxDir(sessionId: string): string {
@@ -97,7 +113,7 @@ export async function executeTerminalCommand(
       cwd,
       timeout,
       maxBuffer: 512 * 1024, // 512KB output cap
-      shell: "/bin/bash",
+      shell: getPlatformShell(),
     });
     return {
       stdout: stdout.slice(0, 8000),
@@ -136,8 +152,8 @@ export interface SandboxResult {
 /**
  * Run code in a language-specific sandbox.
  * JS/TS: node --eval (or ts-node if available)
- * Python: python3 -c
- * Bash: bash -c (with same blocked-command check)
+ * Python: python3 / python (platform-aware)
+ * Bash: bash -c (Unix) or cmd /c (Windows)
  */
 export async function runCodeSandbox(
   code: string,
@@ -179,7 +195,7 @@ export async function runCodeSandbox(
           fs.unlinkSync(tmpFile);
           return {
             output: "",
-            error: "TypeScript ранайм недоступен (ts-node, tsx и esbuild не найдены). Установите ts-node (\'npm i -g ts-node typescript\') или используйте javascript.",
+            error: "TypeScript ранайм недоступен (ts-node, tsx и esbuild не найдены). Установите ts-node ('npm i -g ts-node typescript') или используйте javascript.",
             exitCode: 1,
             durationMs: Date.now() - start,
             language,
@@ -187,16 +203,35 @@ export async function runCodeSandbox(
         }
         break;
       }
-      case "python":
-        command = `python3 "${tmpFile}"`;
+      case "python": {
+        // On Windows, 'python3' may not exist; try python3 first, then python
+        const pythonCmd = await resolvePythonCommand();
+        if (!pythonCmd) {
+          fs.unlinkSync(tmpFile);
+          return {
+            output: "",
+            error: "Python не найден. Установите Python с https://python.org (убедитесь, что он добавлен в PATH).",
+            exitCode: 1,
+            durationMs: Date.now() - start,
+            language,
+          };
+        }
+        command = `${pythonCmd} "${tmpFile}"`;
         break;
+      }
       case "bash": {
         const blockReason = isBlocked(code);
         if (blockReason) {
           fs.unlinkSync(tmpFile);
           return { output: "", error: blockReason, exitCode: 1, durationMs: 0, language };
         }
-        command = `bash "${tmpFile}"`;
+        if (IS_WINDOWS) {
+          // On Windows, run shell scripts via cmd or PowerShell
+          // .sh files are run via cmd /c (basic) or we convert to a .bat-style approach
+          command = `powershell -ExecutionPolicy Bypass -File "${tmpFile}"`;
+        } else {
+          command = `bash "${tmpFile}"`;
+        }
         break;
       }
       default:
@@ -208,7 +243,7 @@ export async function runCodeSandbox(
       cwd,
       timeout,
       maxBuffer: 256 * 1024,
-      shell: "/bin/bash",
+      shell: getPlatformShell(),
     });
 
     const artifacts = listSandboxFiles_internal(cwd);
@@ -249,12 +284,41 @@ function listSandboxFiles_internal(dir: string): string[] {
   }
 }
 
+/**
+ * Check if a command is available in PATH.
+ * Uses 'where' on Windows, 'which' on Unix/macOS.
+ */
 async function commandExists(cmd: string): Promise<boolean> {
   try {
-    await execAsync(`which ${cmd}`);
+    const checkCmd = IS_WINDOWS ? `where ${cmd}` : `which ${cmd}`;
+    await execAsync(checkCmd);
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Resolve the correct Python executable for the current platform.
+ * Returns 'python3', 'python', or null if Python is not available.
+ *
+ * On Windows: 'python3' typically isn't a thing — check 'python' first
+ *   (but also try 'python3' in case the user set it up via pyenv/etc).
+ * On Unix/macOS: prefer 'python3' over 'python' (python2 may exist as 'python').
+ */
+async function resolvePythonCommand(): Promise<string | null> {
+  if (IS_WINDOWS) {
+    // On Windows, first try 'python' (the standard launcher), then 'python3'
+    if (await commandExists("python")) return "python";
+    if (await commandExists("python3")) return "python3";
+    // Also try 'py' (Windows Python Launcher)
+    if (await commandExists("py")) return "py";
+    return null;
+  } else {
+    // Unix/macOS: prefer python3 to avoid python2
+    if (await commandExists("python3")) return "python3";
+    if (await commandExists("python")) return "python";
+    return null;
   }
 }
 

@@ -67,7 +67,34 @@ const SEARCH_ENGINES: SearchEngine[] = [
  * These MUST be checked BEFORE open/search patterns so "запусти python" doesn't
  * get routed to browser.
  */
+// ── Generic product-building intents (no explicit 'код'/'python' required) ────
+// These must fire BEFORE browser open/search patterns so that
+// «напиши игру» routes to code, not browser.
+// Safety: verbs here (напиши/сделай/создай/напишите) only fire when
+// followed by a product-type noun — NOT for «открой google» / «найди ...».
+
+/** Build-verb prefixes (RU) — not exhaustive, intentionally broad */
+const RU_BUILD_VERB = /(?:напиши|написать|напишите|создай|создать|создайте|сгенерируй|сгенерировать|сделай|сделать|сделайте|разработай|разработать|реализуй|реализовать|напиши мне|сделай мне|создай мне)/i;
+
+/** Build-verb prefixes (EN) */
+const EN_BUILD_VERB = /(?:write|create|generate|make|build|develop|implement|code)/i;
+
+/** Product-type nouns that imply a code artifact (RU) */
+const RU_PRODUCT_NOUN = /(?:игр[уаыею]|игру|игра|игры| игре|игрой|приложени[еюяей]|приложение|приложения|апп|сайт[ауе]?|сайт|веб.?сайт|веб.?приложени[ея]|калькулятор[ауе]?|калькулятор|бот[ауе]?|бот|чат.?бот[ауе]?|парсер[ауе]?|парсер|скрапер[ауе]?|скрипт[ауе]?|скрипт|программ[ауе]?|программу|функци[яюей]|функцию|модуль|утилит[ауе]?|утилита|тест[ауы]?|тесты|апи|api|сервис[ауе]?|сервис|сервер[ауе]?|сервер|клиент[ауе]?|клиент|демо|прототип[ауе]?|прототип|телеграм.?бот[ауе]?|телеграм.?бот|андроид.?приложени[ея]|ios.?приложени[ея]|мобильн[оеыйа]+.?приложени[ея]|crud|todo|менеджер[ауе]?|дашборд[ауе]?|дашборд|визуализаци[яюей]|чекер[ауе]?|мониторинг[ауе]?|конвертер[ауе]?|генератор[ауе]?|скачиватель|загрузчик[ауе]?|компилятор[ауе]?|интерпретатор[ауе]?|библиотек[ауе]?|фреймворк[ауе]?)/i;
+
+/** Product-type nouns that imply a code artifact (EN) */
+const EN_PRODUCT_NOUN = /(?:game|app|application|website|site|web\s*app|calculator|bot|chatbot|parser|scraper|script|program|function|module|utility|util|test|api|service|server|client|demo|prototype|telegram\s*bot|android\s*app|ios\s*app|mobile\s*app|crud|todo|manager|dashboard|visuali[sz]ation|checker|monitor|converter|generator|downloader|compiler|interpreter|library|framework|cli|tool)/i;
+
 const CODE_WRITE_PATTERNS = [
+  // ── Generic build-verb + product-noun combos (RU) ──
+  // «напиши игру», «создай калькулятор», «сделай сайт», «напиши бота»
+  // Allow up to 8 words between verb and noun to cover:
+  // «напиши мне игру змейку», «создай приложение для андроид»
+  new RegExp(`${RU_BUILD_VERB.source}\\s+(?:\\S+\\s+){0,8}${RU_PRODUCT_NOUN.source}`, "i"),
+  // ── Generic build-verb + product-noun combos (EN) ──
+  // «write a game», «create a calculator app», «build a website»
+  new RegExp(`${EN_BUILD_VERB.source}\\s+(?:(?:a|an|the|me|my|simple|small|basic|cool)\\s+)*${EN_PRODUCT_NOUN.source}`, "i"),
+
   // RU: напиши / создай / сгенерируй ... код / скрипт / программу / функцию
   /(?:напиши|написать|создай|создать|сгенерируй|сгенерировать|сделай|сделать)\s+(?:\S+\s+)*(?:код|скрипт|программ[уа]|функци[юя]|класс|алгоритм|модуль|утилит[уа])/i,
   // EN: write / create / generate ... code / script / function / program
@@ -297,9 +324,13 @@ export interface ExampleCommand {
 
 export const EXAMPLE_COMMANDS: ExampleCommand[] = [
   { text: "открой google", description: "Мгновенно откроет Google", icon: "🔍" },
-  { text: "открой github", description: "Откроет GitHub", icon: "⬡" },
-  { text: "найди в google нейросети 2026", description: "Поиск в Google", icon: "🌐" },
-  { text: "открой youtube", description: "Откроет YouTube", icon: "▶" },
+  { text: "напиши игру", description: "Откроет редактор и сгенерирует код игры", icon: "🎮" },
+  { text: "сделай калькулятор", description: "Стартует code workflow для калькулятора", icon: "📱" },
+  { text: "создай телеграм бота", description: "Сгенерирует скелет Telegram-бота", icon: "🤖" },
+  { text: "напиши парсер сайтов", description: "Стартует code workflow для парсера", icon: "🔧" },
+  { text: "сделай сайт", description: "Откроет редактор для веб-проекта", icon: "🌐" },
+  { text: "создай приложение для андроид", description: "Стартует code workflow для Android", icon: "📲" },
+  { text: "найди в google нейросети 2026", description: "Поиск в Google", icon: "🔍" },
   { text: "открой сайт habr.com", description: "Откроет любой сайт", icon: "🌍" },
   { text: "напиши python код hello world и запусти его", description: "Напишет и выполнит код локально", icon: "⚡" },
 ];
@@ -315,7 +346,8 @@ export interface Capability {
 export const CAPABILITIES: Capability[] = [
   { title: "Открыть сайт", description: "«открой google» / «открой github»", icon: "🌐" },
   { title: "Поиск", description: "«найди в google ...» / «найди ...»", icon: "🔍" },
+  { title: "Написать игру / приложение", description: "«напиши игру» / «сделай сайт» / «создай бота»", icon: "🎮" },
+  { title: "Создать инструмент", description: "«сделай калькулятор» / «напиши парсер»", icon: "🔧" },
   { title: "Исследовать страницу", description: "Анализ структуры, DOM, навигации", icon: "🔬" },
   { title: "Выполнить задачу", description: "Заполнить форму, кликнуть, действовать", icon: "⚡" },
-  { title: "Суммаризировать", description: "Краткое содержание любой страницы", icon: "📝" },
 ];

@@ -934,44 +934,59 @@ export async function registerRoutes(
       let code: string | null = null;
       let generationSource = "template";
 
-      // ── Try LLM generation first ────────────────────────────────────────────
-      try {
-        const settings = await storage.getSettings();
-        if (settings?.model && settings.model.trim().length > 0) {
-          const providerConfig = {
-            providerType: settings.providerType,
-            baseUrl: settings.baseUrl,
-            port: settings.port,
-            model: settings.model,
-            apiKey: settings.apiKey || "",
-            temperature: parseFloat(settings.temperature) || 0.2,
-            maxTokens: Math.min(settings.maxTokens || 1024, 2048),
-          };
-          const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : "Python";
-          const systemPrompt = `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
-          const userMsg = `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
-          const response = await chat(providerConfig as any, [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMsg },
-          ]);
-          const raw = response.content.trim();
-          // Strip markdown code fences if LLM included them anyway
-          const stripped = raw
-            .replace(/^```[\w]*\n?/m, "")
-            .replace(/\n?```$/m, "")
-            .trim();
-          if (stripped.length > 5) {
-            code = stripped;
-            generationSource = "llm";
+      // ── Fast deterministic path — skip LLM for template-matched queries ──────
+      // isTemplateOnlyRequest() returns true when generateCodeTemplate() will
+      // produce a high-quality result, so there is no reason to wait for an LLM.
+      if (!isTemplateOnlyRequest(lower)) {
+        // ── Try LLM generation with a hard 8-second timeout ────────────────────
+        try {
+          const settings = await storage.getSettings();
+          if (settings?.model && settings.model.trim().length > 0) {
+            const providerConfig = {
+              providerType: settings.providerType,
+              baseUrl: settings.baseUrl,
+              port: settings.port,
+              model: settings.model,
+              apiKey: settings.apiKey || "",
+              temperature: parseFloat(settings.temperature) || 0.2,
+              maxTokens: Math.min(settings.maxTokens || 1024, 2048),
+            };
+            const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : "Python";
+            const systemPrompt = `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
+            const userMsg = `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
+
+            // Hard timeout: if LLM doesn't respond within 8 s, fall through to template.
+            const LLM_TIMEOUT_MS = 8_000;
+            const llmResult = await Promise.race([
+              chat(providerConfig as any, [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userMsg },
+              ]),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("llm_timeout")), LLM_TIMEOUT_MS)
+              ),
+            ]);
+
+            const raw = (llmResult as { content: string }).content.trim();
+            // Strip markdown code fences if LLM included them anyway
+            const stripped = raw
+              .replace(/^```[\w]*\n?/m, "")
+              .replace(/\n?```$/m, "")
+              .trim();
+            if (stripped.length > 5) {
+              code = stripped;
+              generationSource = "llm";
+            }
           }
+        } catch (_llmErr) {
+          // LLM unavailable, timed out, or failed — fall through to template
         }
-      } catch (_llmErr) {
-        // LLM unavailable or failed — fall through to template
       }
 
-      // ── Template fallback ────────────────────────────────────────────────────
+      // ── Template fallback (also fast path for template-detectable queries) ───
       if (!code) {
         code = generateCodeTemplate(query, lower, lang);
+        generationSource = "template";
       }
 
       // ── Run the generated code in the sandbox ─────────────────────────────
@@ -1517,8 +1532,30 @@ ${keyRisks.length > 0 ? `
 
 // ── Server-side code intent detection (mirrors frontend intent-parser) ────────
 
+// ── Generic product-building intents (no explicit 'код'/'python' required) ────
+// These must fire BEFORE browser open/search patterns so that
+// «напиши игру» routes to code, not browser.
+// Safety: only fires when build-verb is followed by a product-type noun.
+
+/** Build-verb prefixes (RU) — mirrors the client-side RU_BUILD_VERB */
+const SRV_RU_BUILD_VERB = /(?:напиши|написать|напишите|создай|создать|создайте|сгенерируй|сгенерировать|сделай|сделать|сделайте|разработай|разработать|реализуй|реализовать|напиши мне|сделай мне|создай мне)/i;
+
+/** Build-verb prefixes (EN) */
+const SRV_EN_BUILD_VERB = /(?:write|create|generate|make|build|develop|implement|code)/i;
+
+/** Product-type nouns that imply a code artifact (RU) */
+const SRV_RU_PRODUCT_NOUN = /(?:игр[уаыею]|игру|игра|игры| игре|игрой|приложени[еюяей]|приложение|приложения|апп|сайт[ауе]?|сайт|веб.?сайт|веб.?приложени[ея]|калькулятор[ауе]?|калькулятор|бот[ауе]?|бот|чат.?бот[ауе]?|парсер[ауе]?|парсер|скрапер[ауе]?|скрипт[ауе]?|скрипт|программ[ауе]?|программу|функци[яюей]|функцию|модуль|утилит[ауе]?|утилита|тест[ауы]?|тесты|апи|api|сервис[ауе]?|сервис|сервер[ауе]?|сервер|клиент[ауе]?|клиент|демо|прототип[ауе]?|прототип|телеграм.?бот[ауе]?|телеграм.?бот|андроид.?приложени[ея]|ios.?приложени[ея]|мобильн[оеыйа]+.?приложени[ея]|crud|todo|менеджер[ауе]?|дашборд[ауе]?|дашборд|визуализаци[яюей]|чекер[ауе]?|мониторинг[ауе]?|конвертер[ауе]?|генератор[ауе]?|скачиватель|загрузчик[ауе]?|компилятор[ауе]?|интерпретатор[ауе]?|библиотек[ауе]?|фреймворк[ауе]?)/i;
+
+/** Product-type nouns that imply a code artifact (EN) */
+const SRV_EN_PRODUCT_NOUN = /(?:game|app|application|website|site|web\s*app|calculator|bot|chatbot|parser|scraper|script|program|function|module|utility|util|test|api|service|server|client|demo|prototype|telegram\s*bot|android\s*app|ios\s*app|mobile\s*app|crud|todo|manager|dashboard|visuali[sz]ation|checker|monitor|converter|generator|downloader|compiler|interpreter|library|framework|cli|tool)/i;
+
 /** Patterns that signal a code-writing / code-running request */
 const SERVER_CODE_WRITE_PATTERNS = [
+  // ── Generic build-verb + product-noun combos (RU) ──
+  new RegExp(`${SRV_RU_BUILD_VERB.source}\\s+(?:\\S+\\s+){0,8}${SRV_RU_PRODUCT_NOUN.source}`, "i"),
+  // ── Generic build-verb + product-noun combos (EN) ──
+  new RegExp(`${SRV_EN_BUILD_VERB.source}\\s+(?:(?:a|an|the|me|my|simple|small|basic|cool)\\s+)*${SRV_EN_PRODUCT_NOUN.source}`, "i"),
+
   /(?:напиши|написать|создай|создать|сгенерируй|сгенерировать|сделай|сделать)\s+(?:\S+\s+)*(?:код|скрипт|программ[уа]|функци[юя]|класс|алгоритм|модуль|утилит[уа])/i,
   /(?:write|create|generate|make|build)\s+(?:\S+\s+)*(?:code|script|function|program|class|module|algorithm)/i,
   /(?:запусти|запустить|выполни|выполнить|прогони|прогнать|run|execute|exec)\s+(?:\S+\s+)*(?:код|скрипт|программ[уа]|code|script)/i,
@@ -1556,6 +1593,36 @@ function detectCodeLanguage(text: string): "python" | "javascript" | "typescript
   if (/\bbash\b|\bshell\b|\.sh\b/.test(lower)) return "bash";
   // Default to Python for generic code requests
   return "python";
+}
+
+/**
+ * Returns true when the query maps to one of the named template patterns in
+ * generateCodeTemplate() — i.e. we can produce a high-quality result instantly
+ * without calling an LLM.  This is the fast-path gate.
+ *
+ * Rules mirror the if-branches inside generateCodeTemplate() for python / JS / bash.
+ */
+function isTemplateOnlyRequest(lower: string): boolean {
+  // Patterns that generateCodeTemplate covers explicitly (RU + EN)
+  const EXPLICIT_TEMPLATES = [
+    /hello.?world|привет.?мир/,
+    /fibonacci|фибоначчи/,
+    /factorial|факториал/,
+    /\bsort\b|сортировк|сортиров/,
+    /\bслов\b|word.?count|подсчёт.?слов|count.?word/,
+    /\bprime\b|простых|простые|простое/,
+    /\breverse\b|разворот|реверс|обратн/,
+    /\bdict\b|словарь|dictionary/,
+    /\bfile\b|файл|read.*write|записать|прочитать/,
+    /\blist\b|список|\barray\b|массив|\bfilter\b|\bmap\b|\breduce\b/,
+    /\bclass\b|класс|\boop\b|объект/,
+    // JS-specific
+    /\bfetch\b|\brequest\b|\bhttp\b/,
+    // Bash
+    /\bls\b|\bdir\b|список.*файл|файл.*список/,
+    /\bprocess\b|процесс|\bpid\b|\btop\b/,
+  ];
+  return EXPLICIT_TEMPLATES.some((pat) => pat.test(lower));
 }
 
 /**
