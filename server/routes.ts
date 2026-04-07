@@ -912,25 +912,69 @@ export async function registerRoutes(
    */
   /**
    * POST /api/computer/code
-   * Body: { query: string, sessionId?: string }
+   * Body: { query: string, sessionId?: string, language?: string }
    *
    * Handles code-writing / code-running requests via the local sandbox.
-   * The response includes the generated code template and sandbox execution result.
+   * Tries LLM generation first, falls back to template.
+   * The response includes the generated code and sandbox execution result.
    * This is the "local code path" — no browser is opened.
    */
   app.post("/api/computer/code", async (req, res) => {
     try {
-      const { query, sessionId } = req.body;
+      const { query, sessionId, language: requestedLang } = req.body;
       if (!query || typeof query !== "string") {
         return res.status(400).json({ error: "Требуется query" });
       }
       const sid = sessionId || `session-${Date.now()}`;
-      const lang = detectCodeLanguage(query);
+      const lang = (requestedLang && ["python", "javascript", "typescript", "bash"].includes(requestedLang)
+        ? requestedLang
+        : detectCodeLanguage(query)) as "python" | "javascript" | "typescript" | "bash";
 
       const lower = query.toLowerCase();
-      let code = generateCodeTemplate(query, lower, lang);
+      let code: string | null = null;
+      let generationSource = "template";
 
-      // Run the generated code in the sandbox
+      // ── Try LLM generation first ────────────────────────────────────────────
+      try {
+        const settings = await storage.getSettings();
+        if (settings?.model && settings.model.trim().length > 0) {
+          const providerConfig = {
+            providerType: settings.providerType,
+            baseUrl: settings.baseUrl,
+            port: settings.port,
+            model: settings.model,
+            apiKey: settings.apiKey || "",
+            temperature: parseFloat(settings.temperature) || 0.2,
+            maxTokens: Math.min(settings.maxTokens || 1024, 2048),
+          };
+          const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : "Python";
+          const systemPrompt = `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
+          const userMsg = `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
+          const response = await chat(providerConfig as any, [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMsg },
+          ]);
+          const raw = response.content.trim();
+          // Strip markdown code fences if LLM included them anyway
+          const stripped = raw
+            .replace(/^```[\w]*\n?/m, "")
+            .replace(/\n?```$/m, "")
+            .trim();
+          if (stripped.length > 5) {
+            code = stripped;
+            generationSource = "llm";
+          }
+        }
+      } catch (_llmErr) {
+        // LLM unavailable or failed — fall through to template
+      }
+
+      // ── Template fallback ────────────────────────────────────────────────────
+      if (!code) {
+        code = generateCodeTemplate(query, lower, lang);
+      }
+
+      // ── Run the generated code in the sandbox ─────────────────────────────
       const sandboxResult = await runCodeSandbox(code, lang, sid, 15_000);
 
       res.json({
@@ -939,6 +983,7 @@ export async function registerRoutes(
         language: lang,
         code,
         sessionId: sid,
+        generationSource,
         sandbox: sandboxResult,
       });
     } catch (err: any) {

@@ -34,7 +34,7 @@ import {
   Command as CommandIcon,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { parseIntent, isCodeIntent, EXAMPLE_COMMANDS, CAPABILITIES, KNOWN_SITES } from "@/lib/intent-parser";
 import type { AgentTask, DemoScenario, Workspace, SessionTab } from "@shared/schema";
 import { LOCAL_PROVIDERS, CLOUD_PROVIDERS, CONFIG_ONLY_PROVIDERS, type ProviderType } from "@shared/schema";
@@ -1213,6 +1213,7 @@ function ProviderConnectBlock() {
 export default function ControlCenter() {
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
+  const [, navigate] = useLocation();
 
   // --- UI State ---
   const [sidecarOpen, setSidecarOpen] = useState(true);
@@ -1602,67 +1603,13 @@ export default function ControlCenter() {
     },
   });
 
-  // ── Code intent handler: route to local sandbox, NOT browser agent ───────
-  const handleCodeIntent = useCallback(async (query: string) => {
-    const intent = parseIntent(query);
-    const lang = (intent.codeLanguage === "typescript" ? "javascript" : (intent.codeLanguage ?? "python")) as "javascript" | "python" | "bash";
-
-    // Switch UI to sandbox immediately for instant feedback
-    setSidecarMode("sandbox");
-    if (!sidecarOpen) setSidecarOpen(true);
-
-    // Use monotonic counter to avoid Date.now() token collisions
-    const token = ++sandboxTokenRef.current;
-    setSandboxInjection({
-      code: `# Генерация кода для: ${query}\n# Пожалуйста, подождите...`,
-      lang,
-      result: null,
-      token,
-    });
-
-    try {
-      const res = await apiRequest("POST", "/api/computer/code", { query, sessionId: activeSession });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        const newToken = ++sandboxTokenRef.current;
-        setSandboxInjection({
-          code: data.code || "",
-          lang: (data.language === "typescript" ? "javascript" : (data.language || lang)) as "javascript" | "python" | "bash",
-          result: data.sandbox ? {
-            output: data.sandbox.output || "",
-            error: data.sandbox.error || "",
-            exitCode: data.sandbox.exitCode ?? null,
-            durationMs: data.sandbox.durationMs || 0,
-            language: data.language || lang,
-          } : null,
-          token: newToken,
-        });
-        toast({ title: "Код готов и выполнен", description: `Язык: ${data.language} | Выход: ${data.sandbox?.exitCode ?? "?"} | ${data.sandbox?.durationMs}ms` });
-      } else {
-        // API returned error — update injection to show error state
-        const errToken = ++sandboxTokenRef.current;
-        const errMsg = data.error || "Неизвестная ошибка";
-        setSandboxInjection({
-          code: `# Ошибка генерации кода\n# ${errMsg}`,
-          lang,
-          result: { output: "", error: errMsg, exitCode: 1, durationMs: 0, language: lang },
-          token: errToken,
-        });
-        toast({ title: "Ошибка генерации кода", description: errMsg, variant: "destructive" });
-      }
-    } catch (err: any) {
-      // Network/parse error — update injection to show error state
-      const errToken = ++sandboxTokenRef.current;
-      const errMsg = err.message || "Ошибка сети";
-      setSandboxInjection({
-        code: `# Ошибка code path\n# ${errMsg}`,
-        lang,
-        result: { output: "", error: errMsg, exitCode: 1, durationMs: 0, language: lang },
-        token: errToken,
-      });
-      toast({ title: "Ошибка code path", description: errMsg, variant: "destructive" });
-    }
-  }, [activeSession, sidecarOpen, setSidecarOpen, setSidecarMode, toast]);
+  // ── Code intent handler: open dedicated Code Window page ────────────────
+  // Navigates to /#/code?q=<encoded query> — a full-screen, code-first page.
+  // Does NOT open a browser / agent task. Existing browser flows are unaffected.
+  const handleCodeIntent = useCallback((query: string) => {
+    const encoded = encodeURIComponent(query.trim());
+    navigate(`/code?q=${encoded}`);
+  }, [navigate]);
 
   // ── CORE: Command Submit Handler (intent parsing) ──
   const handleCommandSubmit = useCallback(() => {

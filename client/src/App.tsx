@@ -11,6 +11,7 @@ import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 import KworkLeadsPage from "@/pages/kwork-leads";
 import ProviderOnboarding from "@/pages/provider-onboarding";
+import CodeWindowPage from "@/pages/code-window";
 
 // Error boundary to prevent blank screen
 class ErrorBoundary extends Component<
@@ -97,6 +98,7 @@ function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={ControlCenter} />
+      <Route path="/code" component={CodeWindowPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/kwork" component={KworkLeadsPage} />
       <Route component={NotFound} />
