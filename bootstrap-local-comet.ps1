@@ -12,7 +12,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 $repoUrl       = 'https://github.com/fdf52400-arch/local-comet.git'
 $repoPath      = Join-Path $env:USERPROFILE 'local-comet'
 $port          = 5051
@@ -20,15 +20,15 @@ $host_addr     = '127.0.0.1'
 $healthUrl     = "http://$host_addr`:$port/api/health"
 $healthTimeout = 60          # seconds to wait for server ready
 $healthPoll    = 1           # seconds between health probes
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 Write-Host ''
-Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Cyan
-Write-Host '  Local Comet  —  bootstrap starting'         -ForegroundColor Cyan
-Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Cyan
+Write-Host '==========================================' -ForegroundColor Cyan
+Write-Host '  Local Comet  -  bootstrap starting'      -ForegroundColor Cyan
+Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host ''
 
-# ── 1. Hard-kill anything on port $port ──────────────────────────────────────
+# -- 1. Hard-kill anything on port $port ---------------------------------------
 function Kill-Port {
   param([int]$p)
   Write-Host "[1/5] Freeing port $p..." -ForegroundColor Yellow
@@ -60,13 +60,13 @@ function Kill-Port {
       Write-Host "    Port $p is free." -ForegroundColor Green
     }
   } catch {
-    Write-Host "    (Could not check port $p — continuing)" -ForegroundColor DarkGray
+    Write-Host "    (Could not check port $p -- continuing)" -ForegroundColor DarkGray
   }
 }
 
 Kill-Port $port
 
-# ── 2. Clone / update repo ───────────────────────────────────────────────────
+# -- 2. Clone / update repo ----------------------------------------------------
 Write-Host ''
 Write-Host '[2/5] Updating repository...' -ForegroundColor Yellow
 Set-Location $env:USERPROFILE
@@ -85,7 +85,7 @@ if (Test-Path (Join-Path $repoPath '.git')) {
 }
 Write-Host '  Repository ready.' -ForegroundColor Green
 
-# ── 3. Install & build ───────────────────────────────────────────────────────
+# -- 3. Install & build --------------------------------------------------------
 Write-Host ''
 Write-Host '[3/5] Installing dependencies...' -ForegroundColor Yellow
 Set-Location $repoPath
@@ -98,11 +98,11 @@ npm run build
 if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
 Write-Host '  Build complete.' -ForegroundColor Green
 
-# ── 4. Start server in a new window ─────────────────────────────────────────
+# -- 4. Start server in a new window ------------------------------------------
 Write-Host ''
 Write-Host '[4/5] Starting Local Comet server...' -ForegroundColor Yellow
 
-# Build the launch command — bind to 127.0.0.1 to avoid Windows firewall prompts
+# Build the launch command -- bind to 127.0.0.1 to avoid Windows firewall prompts
 # and ENOTSUP on SO_REUSEPORT.  Title the window so the user can identify it.
 $launchCmd = @"
 `$host.UI.RawUI.WindowTitle = 'Local Comet Server (port $port)';
@@ -114,7 +114,7 @@ node .\dist\index.cjs
 
 Start-Process powershell -ArgumentList '-NoExit', '-Command', $launchCmd
 
-# ── 5. Poll /api/health until ready ─────────────────────────────────────────
+# -- 5. Poll /api/health until ready ------------------------------------------
 Write-Host ''
 Write-Host "[5/5] Waiting for server at $healthUrl ..." -ForegroundColor Yellow
 
@@ -138,22 +138,22 @@ while ($elapsed -lt $healthTimeout) {
       break
     }
   } catch {
-    # Not up yet — keep polling silently
+    # Not up yet -- keep polling silently
     Write-Host "  ...waiting ($elapsed/$healthTimeout s)" -ForegroundColor DarkGray
   }
 }
 
 if (-not $ready) {
   Write-Host ''
-  Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Red
+  Write-Host '==========================================' -ForegroundColor Red
   Write-Host "  ERROR: Server did not respond within $healthTimeout seconds." -ForegroundColor Red
   Write-Host "  Check the server window for error output."                    -ForegroundColor Red
   Write-Host "  Expected health endpoint: $healthUrl"                         -ForegroundColor Red
-  Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Red
+  Write-Host '==========================================' -ForegroundColor Red
   exit 1
 }
 
-# ── 6. Open browser — deterministic open sequence ───────────────────────────
+# -- 6. Open browser -- deterministic open sequence ---------------------------
 # Strategy:
 #   a) Wait a brief stabilization period after health OK so async server init
 #      (DB seed, Chromium probe, etc.) can finish before the browser fires.
@@ -163,16 +163,16 @@ if (-not $ready) {
 #      React Router initialises correctly.
 #   d) Cache-bust with a timestamp query param so even a cached entry is skipped.
 
-# Small stabilization window after first health OK — avoids opening the browser
+# Small stabilization window after first health OK -- avoids opening the browser
 # while the server is still completing async startup (DB seed, Chromium probe).
 Write-Host '  Waiting 2 s for server to stabilise...' -ForegroundColor DarkGray
 Start-Sleep -Seconds 2
 
 $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 
-# Root URL (no hash yet) — browser unconditionally requests a fresh page.
+# Root URL (no hash yet) -- browser unconditionally requests a fresh page.
 $rootUrl   = "http://$host_addr`:$port/?v=$cacheBust"
-# Hash URL — passed to the browser after the page has been fetched.
+# Hash URL -- passed to the browser after the page has been fetched.
 $hashUrl   = "http://$host_addr`:$port/#/"
 
 Write-Host ''
@@ -180,7 +180,7 @@ Write-Host "Opening: $hashUrl" -ForegroundColor Cyan
 
 # Prefer navigating via the shell URL handler so the OS picks the default
 # browser and opens a new tab with the correct URL from the start.
-# We pass the hash URL directly — modern browsers open it as a fresh tab.
+# We pass the hash URL directly -- modern browsers open it as a fresh tab.
 try {
   # Try to open via Start-Process with the default browser explicitly.
   # Use the root URL for the initial fetch, then immediately replace with hash.
@@ -200,9 +200,9 @@ try {
 }
 
 Write-Host ''
-Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Cyan
-Write-Host '  Local Comet is running!'                     -ForegroundColor Green
-Write-Host "  URL : http://$host_addr`:$port/#/"           -ForegroundColor Green
-Write-Host "  API : $healthUrl"                            -ForegroundColor DarkGray
-Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Cyan
+Write-Host '==========================================' -ForegroundColor Cyan
+Write-Host '  Local Comet is running!'                 -ForegroundColor Green
+Write-Host "  URL : http://$host_addr`:$port/#/"       -ForegroundColor Green
+Write-Host "  API : $healthUrl"                        -ForegroundColor DarkGray
+Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host ''
