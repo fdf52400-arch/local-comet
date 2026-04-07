@@ -5,6 +5,7 @@
  *  – configures the correct language / theme per app theme
  *  – exposes a clean ref for external value injection
  *  – shows a styled fallback textarea while Monaco loads
+ *  – supports full Code VM language set (20+ languages)
  */
 
 import { useRef, useCallback, useEffect } from "react";
@@ -13,12 +14,59 @@ import type { editor as MonacoEditorType } from "monaco-editor";
 import { useTheme } from "@/lib/theme";
 
 // ── language id mapping ───────────────────────────────────────────────────────
-export type EditorLang = "python" | "javascript" | "bash";
+export type EditorLang =
+  | "python"
+  | "javascript"
+  | "typescript"
+  | "bash"
+  | "html"
+  | "css"
+  | "json"
+  | "xml"
+  | "yaml"
+  | "markdown"
+  | "sql"
+  | "powershell"
+  | "java"
+  | "kotlin"
+  | "cpp"
+  | "c"
+  | "csharp"
+  | "go"
+  | "rust"
+  | "swift"
+  | "php"
+  | "ruby"
+  | "r"
+  | "dockerfile"
+  | "plaintext";
 
 const MONACO_LANG: Record<EditorLang, string> = {
   python: "python",
   javascript: "javascript",
+  typescript: "typescript",
   bash: "shell",
+  html: "html",
+  css: "css",
+  json: "json",
+  xml: "xml",
+  yaml: "yaml",
+  markdown: "markdown",
+  sql: "sql",
+  powershell: "powershell",
+  java: "java",
+  kotlin: "kotlin",
+  cpp: "cpp",
+  c: "c",
+  csharp: "csharp",
+  go: "go",
+  rust: "rust",
+  swift: "swift",
+  php: "php",
+  ruby: "ruby",
+  r: "r",
+  dockerfile: "dockerfile",
+  plaintext: "plaintext",
 };
 
 // ── custom dark theme matching Local Comet's dark palette ────────────────────
@@ -44,8 +92,8 @@ function defineThemes(monaco: Monaco) {
       "editor.lineHighlightBackground": "#161b22",
       "editor.selectionBackground": "#264f78",
       "editorCursor.foreground": "#61b8d6",
-      "editorIndentGuide.background": "#1e2530",
-      "editorIndentGuide.activeBackground": "#2c3340",
+      "editorIndentGuide.background1": "#1e2530",
+      "editorIndentGuide.activeBackground1": "#2c3340",
       "scrollbarSlider.background": "#2c3340",
       "scrollbarSlider.hoverBackground": "#3c4456",
       "editor.findMatchBackground": "#264f78",
@@ -70,8 +118,8 @@ function defineThemes(monaco: Monaco) {
       "editor.lineHighlightBackground": "#f0f3f7",
       "editor.selectionBackground": "#b3d3eb",
       "editorCursor.foreground": "#0072b1",
-      "editorIndentGuide.background": "#e4e7eb",
-      "editorIndentGuide.activeBackground": "#c8cdd4",
+      "editorIndentGuide.background1": "#e4e7eb",
+      "editorIndentGuide.activeBackground1": "#c8cdd4",
     },
   });
 }
@@ -106,19 +154,13 @@ export default function MonacoEditorWrapper({
       editorRef.current = editor;
       defineThemes(monaco);
       monaco.editor.setTheme(monacoTheme);
-
-      // Ensure placeholder text is set when empty
-      if (!value && placeholder) {
-        // Monaco doesn't have native placeholder; we rely on the overlay below
-      }
     },
-    [monacoTheme, value, placeholder]
+    [monacoTheme]
   );
 
   // Sync theme when it changes after mount
   useEffect(() => {
     if (editorRef.current) {
-      // Access global monaco from window (loaded by @monaco-editor/react)
       (window as any).monaco?.editor?.setTheme(monacoTheme);
     }
   }, [monacoTheme]);
@@ -138,7 +180,7 @@ export default function MonacoEditorWrapper({
       <MonacoEditor
         height="100%"
         width="100%"
-        language={MONACO_LANG[language]}
+        language={MONACO_LANG[language] ?? "plaintext"}
         value={value}
         theme={monacoTheme}
         onMount={handleMount}

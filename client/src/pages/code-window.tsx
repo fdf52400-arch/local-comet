@@ -1,35 +1,43 @@
 /**
- * Code Window — full-screen IDE-style code workflow page.
+ * Code Window — Code VM-style single-screen workflow.
  *
  * Route: /#/code?q=<user query>
  *
- * Layout:
- *   ┌─────────────────────────────────────────────────────────┐
- *   │  Top bar: back · logo · status badge · theme toggle      │
- *   ├─────────────────────────────────────────────────────────┤
- *   │  Query bar: input + [Сгенерировать]                      │
- *   ├───────────────────────┬─────────────────────────────────┤
- *   │                       │                                  │
- *   │   LEFT: Monaco IDE    │   RIGHT: Output / Debug / Info   │
- *   │   lang tabs           │   tabbed panel                   │
- *   │   action toolbar      │                                  │
- *   │                       │                                  │
- *   └───────────────────────┴─────────────────────────────────┘
- *
- * Actions:
- *   • Сгенерировать — LLM generates new code from query
- *   • Правки        — LLM refines current code via diff-prompt
- *   • Запустить     — runs current code in sandbox
- *   • Дебаг         — runs code + asks LLM to explain errors
+ * Layout (mirrors Code VM exactly):
+ *   ┌──────────────────────────────────────────────────────────┐
+ *   │  Top bar: back · logo · [mode chips] · status · theme    │
+ *   ├──────────────────────┬───────────────────────────────────┤
+ *   │  Editor toolbar:     │  Visor toolbar: ВИЗОР · refresh   │
+ *   │  [lang badge] [lang  │  · fullscreen                     │
+ *   │  dropdown] [Run]     │                                   │
+ *   │  [Debug] [Format]    │                                   │
+ *   │  [Copy] [Download]   │                                   │
+ *   │  [Clear]             │                                   │
+ *   │----------------------│---------------------------------- │
+ *   │                      │                                   │
+ *   │   Monaco Editor      │   Preview / Output / Debug pane  │
+ *   │   (left, draggable)  │   (right)                        │
+ *   │                      │                                   │
+ *   ├──────────────────────┴───────────────────────────────────┤
+ *   │  Bottom prompt bar (full width):                         │
+ *   │  [prompt textarea] [Сгенерировать] [Правки] [Сохранить]  │
+ *   │  [Открыть]                                               │
+ *   └──────────────────────────────────────────────────────────┘
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useLocation, Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   ArrowLeft,
   Play,
@@ -38,17 +46,26 @@ import {
   XCircle,
   AlertTriangle,
   Copy,
-  Terminal,
-  Zap,
-  Code2,
   Bug,
   PenLine,
-  Info,
   Sun,
   Moon,
   RefreshCw,
   Clock,
   Hash,
+  Download,
+  ExternalLink,
+  Wand2,
+  Eye,
+  FileCode2,
+  Code2,
+  ChevronDown,
+  Trash2,
+  Maximize2,
+  AlignLeft,
+  Terminal,
+  Save,
+  Zap,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import MonacoEditorWrapper, { type EditorLang } from "@/components/monaco-editor-wrapper";
@@ -61,10 +78,12 @@ type Phase =
   | "patching"
   | "running"
   | "debugging"
+  | "formatting"
   | "done"
   | "error";
 
-type Lang = EditorLang;
+// Full Code VM language set
+export type Lang = EditorLang;
 
 interface RunResult {
   output: string;
@@ -80,7 +99,90 @@ interface DebugResult {
   fixedCode?: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Language definitions (Code VM complete set) ───────────────────────────────
+
+interface LangDef {
+  id: Lang;
+  label: string;
+  ext: string;
+  comment: string;
+  previewable: boolean;
+  executable: boolean;
+  emoji: string;
+}
+
+const LANG_DEFS: LangDef[] = [
+  { id: "html",       label: "HTML",        ext: ".html", comment: "<!--",  previewable: true,  executable: false, emoji: "🌐" },
+  { id: "css",        label: "CSS",         ext: ".css",  comment: "/*",    previewable: true,  executable: false, emoji: "🎨" },
+  { id: "javascript", label: "JavaScript",  ext: ".js",   comment: "//",    previewable: true,  executable: true,  emoji: "⚡" },
+  { id: "typescript", label: "TypeScript",  ext: ".ts",   comment: "//",    previewable: false, executable: true,  emoji: "🔷" },
+  { id: "python",     label: "Python",      ext: ".py",   comment: "#",     previewable: false, executable: true,  emoji: "🐍" },
+  { id: "bash",       label: "Shell/Bash",  ext: ".sh",   comment: "#",     previewable: false, executable: true,  emoji: "💻" },
+  { id: "json",       label: "JSON",        ext: ".json", comment: "//",    previewable: false, executable: false, emoji: "📋" },
+  { id: "xml",        label: "XML",         ext: ".xml",  comment: "<!--",  previewable: true,  executable: false, emoji: "📄" },
+  { id: "yaml",       label: "YAML",        ext: ".yml",  comment: "#",     previewable: false, executable: false, emoji: "📝" },
+  { id: "markdown",   label: "Markdown",    ext: ".md",   comment: "<!--",  previewable: false, executable: false, emoji: "📖" },
+  { id: "sql",        label: "SQL",         ext: ".sql",  comment: "--",    previewable: false, executable: false, emoji: "🗄️" },
+  { id: "powershell", label: "PowerShell",  ext: ".ps1",  comment: "#",     previewable: false, executable: false, emoji: "🔵" },
+  { id: "java",       label: "Java",        ext: ".java", comment: "//",    previewable: false, executable: false, emoji: "☕" },
+  { id: "kotlin",     label: "Kotlin",      ext: ".kt",   comment: "//",    previewable: false, executable: false, emoji: "🎯" },
+  { id: "cpp",        label: "C++",         ext: ".cpp",  comment: "//",    previewable: false, executable: false, emoji: "⚙️" },
+  { id: "c",          label: "C",           ext: ".c",    comment: "//",    previewable: false, executable: false, emoji: "🔧" },
+  { id: "csharp",     label: "C#",          ext: ".cs",   comment: "//",    previewable: false, executable: false, emoji: "🟣" },
+  { id: "go",         label: "Go",          ext: ".go",   comment: "//",    previewable: false, executable: false, emoji: "🐹" },
+  { id: "rust",       label: "Rust",        ext: ".rs",   comment: "//",    previewable: false, executable: false, emoji: "🦀" },
+  { id: "swift",      label: "Swift",       ext: ".swift",comment: "//",    previewable: false, executable: false, emoji: "🍎" },
+  { id: "php",        label: "PHP",         ext: ".php",  comment: "//",    previewable: false, executable: false, emoji: "🐘" },
+  { id: "ruby",       label: "Ruby",        ext: ".rb",   comment: "#",     previewable: false, executable: false, emoji: "💎" },
+  { id: "r",          label: "R",           ext: ".r",    comment: "#",     previewable: false, executable: false, emoji: "📊" },
+  { id: "dockerfile", label: "Dockerfile",  ext: "",      comment: "#",     previewable: false, executable: false, emoji: "🐳" },
+  { id: "plaintext",  label: "Plain text",  ext: ".txt",  comment: "",      previewable: false, executable: false, emoji: "📃" },
+];
+
+const LANG_MAP = Object.fromEntries(LANG_DEFS.map((d) => [d.id, d])) as Record<Lang, LangDef>;
+
+function getLangDef(id: Lang): LangDef {
+  return LANG_MAP[id] ?? LANG_DEFS[0];
+}
+
+function isPreviewable(lang: Lang): boolean {
+  return getLangDef(lang).previewable;
+}
+
+function getLangExt(lang: Lang): string {
+  return getLangDef(lang).ext;
+}
+
+function getLangComment(lang: Lang): string {
+  return getLangDef(lang).comment;
+}
+
+// ── Lang detection from query ─────────────────────────────────────────────────
+
+function detectLang(text: string): Lang {
+  const lower = text.toLowerCase();
+  if (/\bhtml\b|сайт|веб.?страниц|landing|web\s*page|html.?страниц/.test(lower)) return "html";
+  if (/\bcss\b|стил[ьи]|стиль/.test(lower)) return "css";
+  if (/\btypescript\b|\bts\b/.test(lower)) return "typescript";
+  if (/\bjavascript\b|\bjs\b|\bnode\.?js\b/.test(lower)) return "javascript";
+  if (/\bbash\b|\bshell\b/.test(lower)) return "bash";
+  if (/\brust\b/.test(lower)) return "rust";
+  if (/\bgo\b|\bgolang\b/.test(lower)) return "go";
+  if (/\bjava\b/.test(lower)) return "java";
+  if (/\bc#\b|\bcsharp\b/.test(lower)) return "csharp";
+  if (/\bc\+\+\b|\bcpp\b/.test(lower)) return "cpp";
+  if (/\bruby\b/.test(lower)) return "ruby";
+  if (/\bphp\b/.test(lower)) return "php";
+  if (/\bsql\b/.test(lower)) return "sql";
+  if (/\bjson\b/.test(lower)) return "json";
+  if (/\byaml\b/.test(lower)) return "yaml";
+  if (/\bmarkdown\b/.test(lower)) return "markdown";
+  // Heuristics: game / app / website → HTML for richer preview
+  if (/игр[уаыею]|игру|игра|игры| игре|игрой|game|app.*html|html.*app|dashboard|дашборд/.test(lower)) return "html";
+  return "python";
+}
+
+// ── URL query parser ──────────────────────────────────────────────────────────
 
 function getQueryParam(search: string, key: string): string {
   const idx = search.indexOf("?");
@@ -89,193 +191,247 @@ function getQueryParam(search: string, key: string): string {
   return params.get(key) ?? "";
 }
 
-const LANG_LABELS: Record<Lang, string> = {
-  python: "Python",
-  javascript: "JavaScript",
-  bash: "Bash",
-};
+// ── Simple client-side code formatter ─────────────────────────────────────────
 
-const LANG_EXT: Record<Lang, string> = {
-  python: ".py",
-  javascript: ".js",
-  bash: ".sh",
-};
+function clientFormatCode(code: string, lang: Lang): string {
+  if (!code.trim()) return code;
 
-const LANG_COMMENT: Record<Lang, string> = {
-  python: "#",
-  javascript: "//",
-  bash: "#",
-};
+  if (lang === "python") {
+    return code
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trimEnd();
+  }
 
-// ── Status Badge ──────────────────────────────────────────────────────────────
+  if (lang === "html") {
+    let indent = 0;
+    const lines = code.split("\n").map((line) => line.trim()).filter(Boolean);
+    const formatted: string[] = [];
+    const selfClose = /^<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)/i;
+    const closeOnly = /^<\//;
+    const openClose = /<[^/][^>]*>[^<]*<\/[^>]+>/;
 
-function StatusBadge({
-  phase,
-  exitCode,
-}: {
-  phase: Phase;
-  exitCode?: number | null;
-}) {
-  const badges: Record<Phase, React.ReactNode> = {
-    idle: (
-      <Badge variant="secondary" className="text-[11px] gap-1">
-        <Code2 className="h-3 w-3" /> Готов
-      </Badge>
-    ),
-    generating: (
-      <Badge className="text-[11px] gap-1 bg-purple-500/20 text-purple-400 border-purple-500/30">
-        <Loader2 className="h-3 w-3 animate-spin" /> Генерация…
-      </Badge>
-    ),
-    patching: (
-      <Badge className="text-[11px] gap-1 bg-amber-500/20 text-amber-400 border-amber-500/30">
-        <Loader2 className="h-3 w-3 animate-spin" /> Правки…
-      </Badge>
-    ),
-    running: (
-      <Badge className="text-[11px] gap-1 bg-blue-500/20 text-blue-400 border-blue-500/30">
-        <Loader2 className="h-3 w-3 animate-spin" /> Выполнение…
-      </Badge>
-    ),
-    debugging: (
-      <Badge className="text-[11px] gap-1 bg-orange-500/20 text-orange-400 border-orange-500/30">
-        <Loader2 className="h-3 w-3 animate-spin" /> Дебаг…
-      </Badge>
-    ),
-    done: (
-      <Badge
-        className={`text-[11px] gap-1 ${
-          exitCode === 0
-            ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-            : "bg-red-500/20 text-red-400 border-red-500/30"
-        }`}
-      >
-        {exitCode === 0 ? (
-          <CheckCircle2 className="h-3 w-3" />
-        ) : (
-          <XCircle className="h-3 w-3" />
-        )}
-        {exitCode === 0 ? "Выполнено" : `Ошибка (exit ${exitCode})`}
-      </Badge>
-    ),
-    error: (
-      <Badge className="text-[11px] gap-1 bg-red-500/20 text-red-400 border-red-500/30">
-        <AlertTriangle className="h-3 w-3" /> Ошибка генерации
-      </Badge>
-    ),
-  };
-  return <>{badges[phase]}</>;
+    for (const line of lines) {
+      if (closeOnly.test(line) && !openClose.test(line)) {
+        indent = Math.max(0, indent - 1);
+      }
+      formatted.push("  ".repeat(indent) + line);
+      if (
+        !selfClose.test(line) &&
+        !closeOnly.test(line) &&
+        !openClose.test(line) &&
+        /<[^/][^>]*[^/]>/.test(line)
+      ) {
+        indent++;
+      }
+    }
+    return formatted.join("\n");
+  }
+
+  return code
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trimEnd();
 }
 
-// ── Output Panel ──────────────────────────────────────────────────────────────
+// ── Status indicator ──────────────────────────────────────────────────────────
 
-function OutputTab({
+function StatusLine({
   phase,
-  result,
+  statusMsg,
+  lang,
 }: {
   phase: Phase;
-  result: RunResult | null;
+  statusMsg: string;
+  lang: Lang;
 }) {
-  if (phase === "generating" || phase === "patching") {
-    return (
-      <PanelSpinner
-        color="text-purple-400/70"
-        label={phase === "patching" ? "Применяются правки…" : "Генерируется код…"}
-        testId="output-generating"
-      />
-    );
-  }
-  if (phase === "running") {
-    return (
-      <PanelSpinner
-        color="text-blue-400/70"
-        label="Выполняется код…"
-        testId="output-running"
-      />
-    );
-  }
-  if (phase === "debugging") {
-    return (
-      <PanelSpinner
-        color="text-orange-400/70"
-        label="Анализ ошибок…"
-        testId="output-debugging"
-      />
-    );
-  }
-  if (!result) {
-    return (
-      <div
-        className="h-full flex items-center justify-center text-muted-foreground/40 text-sm"
-        data-testid="output-empty"
-      >
-        {phase === "error"
-          ? "Генерация кода не удалась."
-          : "Нажмите «Запустить» для выполнения."}
-      </div>
-    );
-  }
+  if (!statusMsg && phase === "idle") return null;
 
-  const hasOutput = result.output.trim().length > 0;
-  const hasError = result.error.trim().length > 0;
-  const isOk = result.exitCode === 0;
+  const color =
+    phase === "generating" || phase === "patching"
+      ? "text-purple-400"
+      : phase === "running"
+      ? "text-blue-400"
+      : phase === "debugging"
+      ? "text-orange-400"
+      : phase === "formatting"
+      ? "text-sky-400"
+      : phase === "done"
+      ? "text-emerald-400"
+      : phase === "error"
+      ? "text-red-400"
+      : "text-muted-foreground";
+
+  const spinner =
+    phase === "generating" ||
+    phase === "patching" ||
+    phase === "running" ||
+    phase === "debugging" ||
+    phase === "formatting";
 
   return (
-    <div className="h-full flex flex-col" data-testid="output-panel">
-      {/* Meta bar */}
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-border/50 shrink-0 bg-card/30">
-        <span
-          className={`px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
-            isOk
-              ? "bg-emerald-500/15 text-emerald-400"
-              : "bg-red-500/15 text-red-400"
-          }`}
-          data-testid="output-exit-code"
-        >
-          exit {result.exitCode ?? "?"}
-        </span>
-        <span className="flex items-center gap-1 text-muted-foreground text-[11px] font-mono">
-          <Clock className="h-3 w-3" />
-          {result.durationMs}ms
-        </span>
-        <span className="flex items-center gap-1 text-muted-foreground text-[11px] capitalize font-mono">
-          <Hash className="h-3 w-3" />
-          {result.language}
-        </span>
-      </div>
+    <div className={`flex items-center gap-2 text-[11px] font-mono ${color} select-none`} data-testid="status-line">
+      {spinner && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
+      <span className="truncate">{statusMsg || (phase === "idle" ? "Готов" : "")}</span>
+    </div>
+  );
+}
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="p-4 space-y-4 font-mono text-[12.5px]">
-          {hasOutput && (
-            <div>
-              <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest mb-2 font-sans">
-                stdout
-              </div>
-              <pre
-                className="text-emerald-400/90 whitespace-pre-wrap break-all leading-relaxed"
-                data-testid="output-stdout"
-              >
-                {result.output}
-              </pre>
+// ── Language selector dropdown (Code VM style) ────────────────────────────────
+
+function LangSelector({
+  lang,
+  onChange,
+  disabled,
+}: {
+  lang: Lang;
+  onChange: (l: Lang) => void;
+  disabled?: boolean;
+}) {
+  const def = getLangDef(lang);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 gap-1 text-[11px] font-mono text-primary hover:text-primary hover:bg-primary/10 border border-primary/20"
+          disabled={disabled}
+          data-testid="lang-selector-trigger"
+        >
+          <span>{def.emoji}</span>
+          <span>{def.label}</span>
+          <ChevronDown className="h-3 w-3 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="w-44 max-h-[70vh] overflow-y-auto bg-popover border border-border"
+        data-testid="lang-selector-menu"
+      >
+        {LANG_DEFS.map((d, i) => (
+          <>
+            {i === 6 && <DropdownMenuSeparator key="sep1" />}
+            {i === 12 && <DropdownMenuSeparator key="sep2" />}
+            {i === 20 && <DropdownMenuSeparator key="sep3" />}
+            <DropdownMenuItem
+              key={d.id}
+              onClick={() => onChange(d.id)}
+              className={`text-[12px] gap-2 cursor-pointer ${d.id === lang ? "bg-primary/10 text-primary" : ""}`}
+              data-testid={`lang-option-${d.id}`}
+            >
+              <span className="w-4">{d.emoji}</span>
+              <span>{d.label}</span>
+              {d.id === lang && <CheckCircle2 className="h-3 w-3 ml-auto text-primary" />}
+            </DropdownMenuItem>
+          </>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// ── Debug output bottom drawer ────────────────────────────────────────────────
+
+function DebugDrawer({
+  open,
+  onClose,
+  phase,
+  result,
+  debugResult,
+  onApplyFix,
+}: {
+  open: boolean;
+  onClose: () => void;
+  phase: Phase;
+  result: RunResult | null;
+  debugResult: DebugResult | null;
+  onApplyFix: (code: string) => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="shrink-0 border-t border-border/60 bg-[#0d1117] dark:bg-[#0d1117]"
+      style={{ height: "220px" }}
+      data-testid="debug-drawer"
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/40 bg-card/30">
+        <Terminal className="h-3.5 w-3.5 text-orange-400/70" />
+        <span className="text-[11px] font-mono text-orange-400/80 uppercase tracking-wider">Вывод</span>
+        <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+          onClick={onClose}
+          data-testid="button-debug-close"
+        >
+          ✕
+        </Button>
+      </div>
+      <ScrollArea className="h-[calc(100%-32px)]">
+        <div className="p-3 font-mono text-[12px]">
+          {phase === "debugging" && (
+            <div className="flex items-center gap-2 text-orange-400/70">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>LLM анализирует ошибки…</span>
             </div>
           )}
-          {hasError && (
-            <div>
-              <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest mb-2 font-sans">
-                stderr
-              </div>
-              <pre
-                className="text-red-400/90 whitespace-pre-wrap break-all leading-relaxed"
-                data-testid="output-stderr"
-              >
-                {result.error}
-              </pre>
+          {phase === "running" && (
+            <div className="flex items-center gap-2 text-blue-400/70">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Выполняется…</span>
             </div>
           )}
-          {!hasOutput && !hasError && (
-            <p className="text-muted-foreground/40 italic font-sans text-sm">
-              Нет вывода
-            </p>
+          {result && (
+            <>
+              {result.output && (
+                <pre className="text-emerald-400/90 whitespace-pre-wrap break-all leading-relaxed">
+                  {result.output}
+                </pre>
+              )}
+              {result.error && (
+                <pre className="text-red-400/90 whitespace-pre-wrap break-all leading-relaxed mt-2">
+                  {result.error}
+                </pre>
+              )}
+              {!result.output && !result.error && (
+                <span className="text-muted-foreground/40 italic">Нет вывода</span>
+              )}
+            </>
+          )}
+          {debugResult && (
+            <div className="space-y-3 mt-2">
+              <div className="text-orange-300/80">{debugResult.explanation}</div>
+              {debugResult.suggestedFix && (
+                <div className="text-amber-300/70">{debugResult.suggestedFix}</div>
+              )}
+              {debugResult.fixedCode && (
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[10px] px-2 gap-1 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 mb-2"
+                    onClick={() => onApplyFix(debugResult.fixedCode!)}
+                    data-testid="button-apply-fix"
+                  >
+                    <CheckCircle2 className="h-3 w-3" />
+                    Применить исправление
+                  </Button>
+                  <pre className="text-foreground/70 bg-black/25 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
+                    {debugResult.fixedCode}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+          {!result && !debugResult && phase === "idle" && (
+            <span className="text-muted-foreground/40 italic">
+              Нажмите «Дебаг» для анализа ошибок или «Запустить» для выполнения.
+            </span>
           )}
         </div>
       </ScrollArea>
@@ -283,871 +439,1015 @@ function OutputTab({
   );
 }
 
-// ── Debug Panel ───────────────────────────────────────────────────────────────
+// ── Preview Pane (right side, Code VM Visor style) ────────────────────────────
 
-function DebugTab({
+function VisorPane({
+  code,
+  lang,
   phase,
   result,
-  debugResult,
-  onApplyFix,
 }: {
+  code: string;
+  lang: Lang;
   phase: Phase;
   result: RunResult | null;
-  debugResult: DebugResult | null;
-  onApplyFix: (code: string) => void;
 }) {
-  if (phase === "debugging") {
-    return (
-      <PanelSpinner
-        color="text-orange-400/70"
-        label="LLM анализирует ошибки…"
-        testId="debug-loading"
-      />
-    );
-  }
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframeKey, setIframeKey] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
-  if (!debugResult) {
-    const noError = !result || result.exitCode === 0;
-    return (
-      <div
-        className="h-full flex flex-col items-center justify-center gap-2 text-muted-foreground/40 text-sm px-6 text-center"
-        data-testid="debug-empty"
-      >
-        <Bug className="h-8 w-8 mb-1 opacity-30" />
-        {noError
-          ? "Код выполнен успешно — ошибок нет."
-          : "Нажмите «Дебаг» для анализа ошибок."}
-      </div>
-    );
-  }
+  const buildSrcDoc = useCallback((): string => {
+    if (lang === "css") {
+      return `<!DOCTYPE html><html><head><style>body{margin:0;padding:16px;background:#111;color:#d4d8e2;font-family:system-ui}${code}</style></head><body><div class="preview-root"><p style="color:#666;font-size:12px;padding:8px 0">CSS Preview — HTML будет отображён здесь</p></div></body></html>`;
+    }
+    if (lang === "xml") {
+      return `<!DOCTYPE html><html><head><style>body{margin:0;padding:16px;background:#0d1117;color:#d4d8e2;font-family:monospace;font-size:12px}pre{white-space:pre-wrap}</style></head><body><pre>${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre></body></html>`;
+    }
+    if (lang === "markdown") {
+      // Simple markdown render
+      const escaped = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const rendered = escaped
+        .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+        .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+        .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*(.+?)\*/g, "<em>$1</em>")
+        .replace(/`(.+?)`/g, "<code>$1</code>")
+        .replace(/\n/g, "<br>");
+      return `<!DOCTYPE html><html><head><style>body{margin:0;padding:20px;background:#0d1117;color:#d4d8e2;font-family:system-ui;line-height:1.6}h1,h2,h3{color:#61b8d6}code{background:#1e2530;padding:2px 4px;border-radius:3px}</style></head><body>${rendered}</body></html>`;
+    }
+    if (lang === "javascript" || lang === "typescript") {
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:0;padding:12px;font-family:monospace;font-size:13px;background:#0d1117;color:#d4d8e2}pre{margin:0;white-space:pre-wrap}</style></head><body><pre id="out"></pre><script>
+const _log = console.log;
+const _err = console.error;
+const pre = document.getElementById('out');
+console.log = (...args) => { pre.textContent += args.map(String).join(' ') + '\\n'; _log(...args); };
+console.error = (...args) => { pre.textContent += '\\u274c ' + args.map(String).join(' ') + '\\n'; _err(...args); };
+window.onerror = (msg, src, line) => { pre.textContent += '\\u274c ERROR: ' + msg + ' (line ' + line + ')\\n'; };
+try {
+${code}
+} catch(e) { pre.textContent += '\\u274c ' + e; }
+<\/script></body></html>`;
+    }
+    // HTML — direct pass-through
+    return code;
+  }, [code, lang]);
 
-  return (
-    <ScrollArea className="h-full" data-testid="debug-panel">
-      <div className="p-4 space-y-4">
-        {/* Explanation */}
-        <div>
-          <div className="text-[10px] text-orange-400/70 uppercase tracking-widest mb-2 font-sans">
-            Анализ
-          </div>
-          <p className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap">
-            {debugResult.explanation}
-          </p>
+  const refresh = () => setIframeKey((k) => k + 1);
+
+  const openInBrowser = () => {
+    const src = buildSrcDoc();
+    const blob = new Blob([src], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const generating = phase === "generating" || phase === "patching";
+
+  // Non-previewable: show output panel
+  if (!isPreviewable(lang) && lang !== "javascript" && lang !== "typescript") {
+    return (
+      <div className="h-full flex flex-col" data-testid="visor-output-pane">
+        {/* Output visor header */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0 bg-card/20">
+          <Terminal className="h-3.5 w-3.5 text-muted-foreground/60" />
+          <span className="text-[11px] font-mono text-muted-foreground/70 uppercase tracking-wider">Вывод</span>
+          <div className="flex-1" />
+          {result && (
+            <span
+              className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                result.exitCode === 0
+                  ? "bg-emerald-500/15 text-emerald-400"
+                  : "bg-red-500/15 text-red-400"
+              }`}
+            >
+              exit {result.exitCode ?? "?"}
+            </span>
+          )}
+          {result && (
+            <span className="flex items-center gap-1 text-muted-foreground text-[10px] font-mono">
+              <Clock className="h-3 w-3" />
+              {result.durationMs}ms
+            </span>
+          )}
         </div>
-
-        {/* Suggested fix prose */}
-        {debugResult.suggestedFix && (
-          <div>
-            <div className="text-[10px] text-amber-400/70 uppercase tracking-widest mb-2 font-sans">
-              Предложение
-            </div>
-            <p className="text-sm text-foreground/70 leading-relaxed whitespace-pre-wrap">
-              {debugResult.suggestedFix}
-            </p>
-          </div>
-        )}
-
-        {/* Fixed code */}
-        {debugResult.fixedCode && (
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] text-emerald-400/70 uppercase tracking-widest font-sans">
-                Исправленный код
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-4 font-mono text-[12.5px]">
+            {generating && (
+              <div className="flex items-center gap-2 text-purple-400/70">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">{phase === "patching" ? "Применяются правки…" : "Генерируется код…"}</span>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 text-[10px] px-2 gap-1 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
-                onClick={() => onApplyFix(debugResult.fixedCode!)}
-                data-testid="button-apply-fix"
-              >
-                <CheckCircle2 className="h-3 w-3" />
-                Применить
-              </Button>
-            </div>
-            <pre className="font-mono text-[12px] text-foreground/80 bg-black/25 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
-              {debugResult.fixedCode}
-            </pre>
+            )}
+            {phase === "running" && (
+              <div className="flex items-center gap-2 text-blue-400/70">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">Выполняется код…</span>
+              </div>
+            )}
+            {phase === "debugging" && (
+              <div className="flex items-center gap-2 text-orange-400/70">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">Анализ ошибок…</span>
+              </div>
+            )}
+            {result && !generating && (
+              <>
+                {result.output && (
+                  <pre className="text-emerald-400/90 whitespace-pre-wrap break-all leading-relaxed" data-testid="output-stdout">
+                    {result.output}
+                  </pre>
+                )}
+                {result.error && (
+                  <pre className="text-red-400/90 whitespace-pre-wrap break-all leading-relaxed mt-2" data-testid="output-stderr">
+                    {result.error}
+                  </pre>
+                )}
+                {!result.output && !result.error && (
+                  <p className="text-muted-foreground/40 italic text-sm">Нет вывода</p>
+                )}
+              </>
+            )}
+            {!result && !generating && phase !== "running" && phase !== "debugging" && (
+              <div className="flex flex-col items-center justify-center h-40 gap-2 text-muted-foreground/30 text-sm">
+                <Terminal className="h-8 w-8 opacity-20" />
+                <span>Нажмите «Запустить» для выполнения</span>
+              </div>
+            )}
           </div>
-        )}
+        </ScrollArea>
       </div>
-    </ScrollArea>
-  );
-}
+    );
+  }
 
-// ── Info Panel ────────────────────────────────────────────────────────────────
-
-function InfoTab({
-  lang,
-  code,
-  userQuery,
-  sessionId,
-}: {
-  lang: Lang;
-  code: string;
-  userQuery: string;
-  sessionId: string;
-}) {
-  const lineCount = code ? code.split("\n").length : 0;
-  const charCount = code.length;
-
-  return (
-    <ScrollArea className="h-full" data-testid="info-panel">
-      <div className="p-4 space-y-4">
-        <div className="space-y-2">
-          <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-sans">
-            Сессия
-          </div>
-          <div className="font-mono text-[12px] text-muted-foreground/70 bg-muted/20 rounded px-2 py-1.5 break-all">
-            {sessionId}
-          </div>
-        </div>
-
-        {userQuery && (
-          <div className="space-y-2">
-            <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-sans">
-              Запрос
-            </div>
-            <p className="text-sm text-foreground/70 leading-relaxed">
-              {userQuery}
-            </p>
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-sans">
-            Файл
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <span className="font-mono text-[12px] text-primary/80 bg-primary/10 rounded px-2 py-1">
-              main{LANG_EXT[lang]}
-            </span>
-            <span className="font-mono text-[12px] text-muted-foreground/60 bg-muted/20 rounded px-2 py-1">
-              {lineCount} строк
-            </span>
-            <span className="font-mono text-[12px] text-muted-foreground/60 bg-muted/20 rounded px-2 py-1">
-              {charCount} символов
-            </span>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-[10px] text-muted-foreground/50 uppercase tracking-widest font-sans">
-            Язык
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {(["python", "javascript", "bash"] as Lang[]).map((l) => (
-              <span
-                key={l}
-                className={`font-mono text-[12px] rounded px-2 py-1 ${
-                  l === lang
-                    ? "text-primary bg-primary/15"
-                    : "text-muted-foreground/50 bg-muted/10"
-                }`}
-              >
-                {LANG_LABELS[l]}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="text-[11px] text-muted-foreground/30 border-t border-border/40 pt-3 font-mono">
-          Local Comet IDE • v2
-        </div>
-      </div>
-    </ScrollArea>
-  );
-}
-
-// ── Shared Spinner ────────────────────────────────────────────────────────────
-
-function PanelSpinner({
-  color,
-  label,
-  testId,
-}: {
-  color: string;
-  label: string;
-  testId?: string;
-}) {
+  // Previewable: show visor iframe
   return (
     <div
-      className="h-full flex items-center justify-center gap-3 text-muted-foreground/60"
-      data-testid={testId}
+      className={`h-full flex flex-col ${isFullscreen ? "fixed inset-0 z-50 bg-background" : ""}`}
+      data-testid="visor-preview-pane"
     >
-      <Loader2 className={`h-5 w-5 animate-spin ${color}`} />
-      <span className="text-sm">{label}</span>
+      {/* Visor header — Code VM style */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 shrink-0 bg-card/20">
+        <Eye className="h-3.5 w-3.5 text-primary/60" />
+        <span className="text-[11px] font-mono text-primary/70 uppercase tracking-wider font-semibold">Визор</span>
+        <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 text-[10px] px-2 gap-1 text-muted-foreground hover:text-foreground"
+          onClick={refresh}
+          data-testid="button-visor-refresh"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Обновить
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 text-[10px] px-2 gap-1 text-muted-foreground hover:text-sky-400"
+          onClick={openInBrowser}
+          data-testid="button-visor-open"
+        >
+          <ExternalLink className="h-3 w-3" />
+          В браузер
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
+          onClick={() => setIsFullscreen((v) => !v)}
+          data-testid="button-visor-fullscreen"
+        >
+          <Maximize2 className="h-3 w-3" />
+        </Button>
+      </div>
+
+      {/* Live preview area */}
+      <div className="flex-1 min-h-0 relative">
+        {generating ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0d1117]/90 text-muted-foreground/60 z-10">
+            <Loader2 className="h-6 w-6 animate-spin text-purple-400/70" />
+            <span className="text-sm">{phase === "patching" ? "Применяются правки…" : "Генерируется код…"}</span>
+          </div>
+        ) : !code.trim() ? (
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground/30 text-sm"
+            data-testid="visor-empty"
+          >
+            <Eye className="h-8 w-8 opacity-20" />
+            <span>Предпросмотр появится после генерации кода</span>
+          </div>
+        ) : null}
+        <iframe
+          key={iframeKey}
+          ref={iframeRef}
+          srcDoc={buildSrcDoc()}
+          sandbox="allow-scripts allow-same-origin allow-forms"
+          className="w-full h-full border-0"
+          title="Code Preview"
+          data-testid="preview-iframe"
+        />
+      </div>
     </div>
   );
 }
 
-// ── Main Code Window Page ─────────────────────────────────────────────────────
+// ── Resizable split ────────────────────────────────────────────────────────────
+
+function useSplitResize(defaultLeftPct = 50) {
+  const [leftPct, setLeftPct] = useState(defaultLeftPct);
+  const dragging = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (me: MouseEvent) => {
+      if (!dragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = me.clientX - rect.left;
+      const pct = Math.min(80, Math.max(20, (x / rect.width) * 100));
+      setLeftPct(pct);
+    };
+
+    const onUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
+  return { leftPct, containerRef, onMouseDown };
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function CodeWindowPage() {
   const [location] = useLocation();
   const { theme, toggleTheme } = useTheme();
 
-  // Parse query
+  // Parse initial query from URL
   const rawSearch = typeof window !== "undefined" ? window.location.search : "";
   const rawHash = typeof window !== "undefined" ? window.location.hash : "";
   const initialQuery = decodeURIComponent(
     getQueryParam(rawSearch, "q") || getQueryParam(rawHash, "q")
   );
 
+  // State
   const [userQuery, setUserQuery] = useState(initialQuery);
-  const [patchQuery, setPatchQuery] = useState("");
-  const [showPatchBar, setShowPatchBar] = useState(false);
-  const [lang, setLang] = useState<Lang>("python");
+  const [lang, setLang] = useState<Lang>(() => detectLang(initialQuery));
   const [code, setCode] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<RunResult | null>(null);
   const [debugResult, setDebugResult] = useState<DebugResult | null>(null);
   const [sessionId] = useState(() => `cw-${Date.now()}`);
   const [copied, setCopied] = useState(false);
-  const [rightTab, setRightTab] = useState<"output" | "debug" | "info">(
-    "output"
-  );
+  const [statusMsg, setStatusMsg] = useState("");
+  const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
+
+  // Split
+  const { leftPct, containerRef, onMouseDown } = useSplitResize(50);
+
+  const promptRef = useRef<HTMLTextAreaElement>(null);
 
   const isWorking =
     phase === "generating" ||
     phase === "patching" ||
     phase === "running" ||
-    phase === "debugging";
+    phase === "debugging" ||
+    phase === "formatting";
 
-  // ── Generate + run ──────────────────────────────────────────────────────────
-  const generateAndRun = useCallback(
+  // Auto-focus prompt on load
+  useEffect(() => {
+    promptRef.current?.focus();
+  }, []);
+
+  // Auto-trigger generation if query was passed via URL
+  useEffect(() => {
+    if (initialQuery.trim()) {
+      const detectedLang = detectLang(initialQuery);
+      setLang(detectedLang);
+      void generateCode(initialQuery, detectedLang);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Generate code ────────────────────────────────────────────────────────────
+  const generateCode = useCallback(
     async (query: string, overrideLang?: Lang) => {
-      if (!query.trim()) return;
+      if (!query.trim() || isWorking) return;
 
+      const useLang = overrideLang ?? lang;
       setPhase("generating");
       setResult(null);
       setDebugResult(null);
-      setRightTab("output");
+      setStatusMsg("Генерируется код…");
+      const commentChar = getLangComment(useLang);
       setCode(
-        `${LANG_COMMENT[overrideLang ?? lang]} Генерация кода для: ${query}\n${LANG_COMMENT[overrideLang ?? lang]} Пожалуйста, подождите…`
+        commentChar
+          ? `${commentChar} Генерация: ${query}\n${commentChar} Пожалуйста, подождите…`
+          : `// Генерация: ${query}\n// Пожалуйста, подождите…`
       );
 
       try {
         const res = await apiRequest("POST", "/api/computer/code", {
           query,
           sessionId,
-          language: overrideLang ?? lang,
+          language: useLang === "typescript" ? "javascript" : useLang,
         });
         const data = await res.json();
 
         if (!res.ok || !data.ok) {
           const errMsg = data.error || `Ошибка ${res.status}`;
-          setCode(
-            `${LANG_COMMENT[overrideLang ?? lang]} Ошибка генерации: ${errMsg}`
-          );
+          setCode(commentChar ? `${commentChar} Ошибка генерации: ${errMsg}` : `// Ошибка: ${errMsg}`);
           setPhase("error");
+          setStatusMsg(`✗ Ошибка: ${errMsg}`);
           return;
         }
 
-        const detectedLang = (
-          data.language === "typescript"
-            ? "javascript"
-            : (data.language ?? (overrideLang ?? lang))
-        ) as Lang;
+        // Detect language from response
+        let detectedLang = useLang;
+        if (data.language) {
+          const dl = data.language as Lang;
+          const known = LANG_DEFS.find((d) => d.id === dl);
+          if (known) detectedLang = dl;
+        }
         setLang(detectedLang);
         setCode(data.code || "");
 
-        if (data.sandbox) {
+        const langDef = getLangDef(detectedLang);
+
+        // Auto-open debug drawer for non-previewable langs after run
+        if (!isPreviewable(detectedLang)) {
+          setDebugDrawerOpen(true);
+        }
+
+        // For HTML/CSS: show preview immediately
+        if (isPreviewable(detectedLang)) {
           setPhase("done");
           setResult({
+            output: "Preview ready",
+            error: "",
+            exitCode: 0,
+            durationMs: 0,
+            language: detectedLang,
+          });
+          setStatusMsg(`✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Визор обновлён.`);
+          return;
+        }
+
+        // Run in sandbox if provided
+        if (data.sandbox) {
+          setPhase("done");
+          const r: RunResult = {
             output: data.sandbox.output ?? data.sandbox.stdout ?? "",
             error: data.sandbox.error ?? data.sandbox.stderr ?? "",
             exitCode: data.sandbox.exitCode ?? null,
             durationMs: data.sandbox.durationMs ?? 0,
             language: data.language ?? detectedLang,
-          });
+          };
+          setResult(r);
+          setStatusMsg(
+            r.exitCode === 0
+              ? `✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Выполнено.`
+              : `⚠ Завершено с ошибкой (exit ${r.exitCode})`
+          );
         } else {
-          setPhase("running");
-          await runCode(data.code, detectedLang);
+          // Run manually
+          await runCodeImpl(data.code, detectedLang);
         }
       } catch (err: any) {
-        setCode(
-          `${LANG_COMMENT[overrideLang ?? lang]} Ошибка: ${err.message}`
-        );
+        setCode(`// Ошибка: ${err.message}`);
         setPhase("error");
+        setStatusMsg(`✗ Ошибка: ${err.message}`);
       }
     },
-    [lang, sessionId]
+    [lang, sessionId, isWorking]
   );
 
-  // ── Patch (Правки) — refine existing code ──────────────────────────────────
+  // ── Run code ─────────────────────────────────────────────────────────────────
+  const runCodeImpl = useCallback(
+    async (codeToRun: string, forceLang?: Lang) => {
+      const src = codeToRun ?? code;
+      const langToUse = forceLang ?? lang;
+      if (!src.trim()) return;
+
+      const langDef = getLangDef(langToUse);
+
+      if (isPreviewable(langToUse)) {
+        // Just refresh visor
+        setPhase("done");
+        setResult({
+          output: "Preview refreshed",
+          error: "",
+          exitCode: 0,
+          durationMs: 0,
+          language: langToUse,
+        });
+        setStatusMsg(`✓ Визор обновлён. Язык: ${langDef.emoji} ${langDef.label}`);
+        return;
+      }
+
+      setPhase("running");
+      setStatusMsg("Выполняется код…");
+      setDebugDrawerOpen(true);
+
+      try {
+        const res = await apiRequest("POST", "/api/computer/sandbox", {
+          code: src,
+          language: langToUse === "typescript" ? "javascript" : langToUse,
+          sessionId,
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          setPhase("done");
+          const r: RunResult = {
+            output: "",
+            error: data.error || `Ошибка ${res.status}`,
+            exitCode: 1,
+            durationMs: 0,
+            language: langToUse,
+          };
+          setResult(r);
+          setStatusMsg(`⚠ Ошибка выполнения`);
+          return;
+        }
+
+        const r: RunResult = {
+          output: data.output ?? data.stdout ?? "",
+          error: data.error ?? data.stderr ?? "",
+          exitCode: data.exitCode ?? null,
+          durationMs: data.durationMs ?? 0,
+          language: data.language ?? langToUse,
+        };
+        setResult(r);
+        setPhase("done");
+        setStatusMsg(
+          r.exitCode === 0
+            ? `✓ Выполнено (${r.durationMs}ms)`
+            : `⚠ Завершено с ошибкой exit ${r.exitCode}`
+        );
+      } catch (err: any) {
+        setPhase("done");
+        setResult({
+          output: "",
+          error: err.message,
+          exitCode: 1,
+          durationMs: 0,
+          language: langToUse,
+        });
+        setStatusMsg(`✗ Ошибка: ${err.message}`);
+      }
+    },
+    [code, lang, sessionId]
+  );
+
+  const handleRun = useCallback(() => {
+    void runCodeImpl(code, lang);
+  }, [code, lang, runCodeImpl]);
+
+  // ── Patch / Правки ────────────────────────────────────────────────────────────
   const applyPatch = useCallback(
     async (instructions: string) => {
-      if (!instructions.trim() || !code.trim()) return;
+      if (!instructions.trim() || !code.trim() || isWorking) return;
 
       setPhase("patching");
       setResult(null);
       setDebugResult(null);
-      setRightTab("output");
+      setStatusMsg("Применяются правки…");
 
-      // Build a prompt asking LLM to refine current code
-      const patchPrompt = `Вот текущий ${LANG_LABELS[lang]} код:\n\`\`\`\n${code}\n\`\`\`\n\nВнеси следующие правки: ${instructions}\n\nВерни только готовый исправленный код без пояснений.`;
+      const langDef = getLangDef(lang);
+      const patchPrompt = `Вот текущий ${langDef.label} код:\n\`\`\`\n${code}\n\`\`\`\n\nВнеси следующие правки: ${instructions}\n\nВерни только готовый исправленный код без пояснений.`;
 
       try {
         const res = await apiRequest("POST", "/api/computer/code", {
           query: patchPrompt,
           sessionId,
-          language: lang,
+          language: lang === "typescript" ? "javascript" : lang,
         });
         const data = await res.json();
 
         if (!res.ok || !data.ok) {
           setPhase("error");
+          setStatusMsg("✗ Ошибка применения правок");
           return;
         }
 
         const newCode = data.code || code;
         setCode(newCode);
 
-        if (data.sandbox) {
+        if (isPreviewable(lang)) {
           setPhase("done");
-          setResult({
+          setResult({ output: "Preview updated", error: "", exitCode: 0, durationMs: 0, language: lang });
+          setStatusMsg(`✓ Правки применены. Визор обновлён.`);
+          return;
+        }
+
+        if (data.sandbox) {
+          const r: RunResult = {
             output: data.sandbox.output ?? data.sandbox.stdout ?? "",
             error: data.sandbox.error ?? data.sandbox.stderr ?? "",
             exitCode: data.sandbox.exitCode ?? null,
             durationMs: data.sandbox.durationMs ?? 0,
             language: lang,
-          });
+          };
+          setResult(r);
+          setPhase("done");
+          setStatusMsg(`✓ Правки применены. Выполнено.`);
         } else {
-          setPhase("running");
-          await runCode(newCode, lang);
+          await runCodeImpl(newCode, lang);
         }
-        setShowPatchBar(false);
-        setPatchQuery("");
       } catch (err: any) {
         setPhase("error");
+        setStatusMsg(`✗ Ошибка: ${err.message}`);
       }
     },
-    [code, lang, sessionId]
+    [code, lang, sessionId, isWorking, runCodeImpl]
   );
 
-  // ── Run code ────────────────────────────────────────────────────────────────
-  const runCode = useCallback(
-    async (codeToRun?: string, forceLang?: Lang) => {
-      const src = codeToRun ?? code;
-      const langToUse = forceLang ?? lang;
-      if (!src.trim()) return;
-
-      setPhase("running");
-      setResult(null);
-      setDebugResult(null);
-      setRightTab("output");
-
-      try {
-        const res = await apiRequest("POST", "/api/sandbox/run", {
-          code: src,
-          language: langToUse,
-          sessionId,
-          timeout: 15000,
-        });
-        const data = await res.json();
-
-        const runResult: RunResult = res.ok
-          ? {
-              output: data.output ?? data.stdout ?? "",
-              error: data.error ?? data.stderr ?? "",
-              exitCode: data.exitCode ?? null,
-              durationMs: data.durationMs ?? 0,
-              language: data.language ?? langToUse,
-            }
-          : {
-              output: "",
-              error: data.error || `Ошибка сервера: ${res.status}`,
-              exitCode: 1,
-              durationMs: 0,
-              language: langToUse,
-            };
-
-        setResult(runResult);
-        setPhase("done");
-      } catch (err: any) {
-        setResult({
-          output: "",
-          error: `Ошибка выполнения: ${err.message}`,
-          exitCode: 1,
-          durationMs: 0,
-          language: langToUse,
-        });
-        setPhase("done");
-      }
-    },
-    [code, lang, sessionId]
-  );
-
-  // ── Debug — run + LLM explain errors ────────────────────────────────────────
-  const debugCode = useCallback(async () => {
-    if (!code.trim()) return;
-
+  // ── Debug ─────────────────────────────────────────────────────────────────────
+  const handleDebug = useCallback(async () => {
+    if (!code.trim() || isWorking) return;
     setPhase("debugging");
     setDebugResult(null);
-    setRightTab("debug");
+    setDebugDrawerOpen(true);
+    setStatusMsg("Анализ ошибок…");
 
-    let runRes: RunResult | null = null;
-
-    // First run the code to get fresh results
     try {
-      const res = await apiRequest("POST", "/api/sandbox/run", {
+      const res = await apiRequest("POST", "/api/computer/debug", {
         code,
         language: lang,
+        error: result?.error ?? "",
         sessionId,
-        timeout: 15000,
       });
       const data = await res.json();
-      runRes = {
-        output: data.output ?? data.stdout ?? "",
-        error: data.error ?? data.stderr ?? "",
-        exitCode: data.exitCode ?? null,
-        durationMs: data.durationMs ?? 0,
-        language: data.language ?? lang,
-      };
-      setResult(runRes);
-    } catch (err: any) {
-      runRes = {
-        output: "",
-        error: `Ошибка выполнения: ${(err as any).message}`,
-        exitCode: 1,
-        durationMs: 0,
-        language: lang,
-      };
-      setResult(runRes);
-    }
 
-    // Then ask LLM to explain + suggest fix
-    const hasError =
-      (runRes.error && runRes.error.trim().length > 0) ||
-      (runRes.exitCode !== null && runRes.exitCode !== 0);
+      if (!res.ok || !data.ok) {
+        setPhase("error");
+        setStatusMsg("✗ Ошибка дебага");
+        return;
+      }
 
-    if (!hasError) {
-      // No error — nothing to debug
       setDebugResult({
-        explanation: "Код выполнен без ошибок. Нет проблем для анализа.",
+        explanation: data.explanation ?? "",
+        suggestedFix: data.suggestedFix,
+        fixedCode: data.fixedCode,
       });
       setPhase("done");
-      return;
+      setStatusMsg("✓ Анализ завершён");
+    } catch (err: any) {
+      setPhase("error");
+      setStatusMsg(`✗ Ошибка: ${err.message}`);
     }
+  }, [code, lang, result, sessionId, isWorking]);
 
-    const debugPrompt = `Проанализируй следующую ошибку в ${LANG_LABELS[lang]} коде.\n\nКод:\n\`\`\`\n${code}\n\`\`\`\n\nStdout:\n${runRes.output || "(пусто)"}\n\nStderr / ошибка:\n${runRes.error || "(пусто)"}\n\nExit code: ${runRes.exitCode}\n\nОтветь в формате JSON:\n{\n  "explanation": "...",\n  "suggestedFix": "...",\n  "fixedCode": "..."\n}\n\nGive only the JSON without code blocks.`;
+  // ── Format ────────────────────────────────────────────────────────────────────
+  const handleFormat = useCallback(async () => {
+    if (!code.trim() || isWorking) return;
+    setPhase("formatting");
+    setStatusMsg("Форматирование…");
 
     try {
-      const res = await apiRequest("POST", "/api/computer/code", {
-        query: debugPrompt,
-        sessionId,
+      const res = await apiRequest("POST", "/api/computer/format", {
+        code,
         language: lang,
       });
       const data = await res.json();
 
-      if (res.ok && data.ok) {
-        // Try to parse JSON from LLM response
-        let rawText = data.code || data.response || "";
-        // strip potential markdown fences
-        rawText = rawText.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-        try {
-          const parsed = JSON.parse(rawText);
-          setDebugResult({
-            explanation: parsed.explanation || rawText,
-            suggestedFix: parsed.suggestedFix,
-            fixedCode: parsed.fixedCode,
-          });
-        } catch {
-          setDebugResult({ explanation: rawText });
-        }
+      if (res.ok && data.ok && data.code) {
+        setCode(data.code);
       } else {
-        setDebugResult({
-          explanation: "Не удалось получить анализ ошибки от LLM.",
-        });
+        // Fallback to client-side formatter
+        setCode(clientFormatCode(code, lang));
       }
-    } catch (err: any) {
-      setDebugResult({
-        explanation: `Ошибка запроса к LLM: ${err.message}`,
-      });
+    } catch {
+      setCode(clientFormatCode(code, lang));
     }
 
-    setPhase("done");
-  }, [code, lang, sessionId]);
+    setPhase("idle");
+    setStatusMsg("✓ Отформатировано");
+  }, [code, lang, isWorking]);
 
-  // ── Auto-generate on mount ──────────────────────────────────────────────────
-  const didInit = useRef(false);
-  useEffect(() => {
-    if (didInit.current) return;
-    didInit.current = true;
-    if (initialQuery.trim()) {
-      const lower = initialQuery.toLowerCase();
-      let detectedLang: Lang = "python";
-      if (/\btypescript\b|\bts\b/.test(lower)) detectedLang = "javascript";
-      else if (/\bjavascript\b|\bjs\b|\bnode\.?js\b/.test(lower))
-        detectedLang = "javascript";
-      else if (/\bbash\b|\bshell\b/.test(lower)) detectedLang = "bash";
-      setLang(detectedLang);
-      generateAndRun(initialQuery, detectedLang);
-    }
-  }, []); // eslint-disable-line
-
-  // ── Copy code ───────────────────────────────────────────────────────────────
-  const handleCopy = async () => {
+  // ── Copy ──────────────────────────────────────────────────────────────────────
+  const handleCopy = useCallback(() => {
     if (!code) return;
-    await navigator.clipboard.writeText(code).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setStatusMsg("✓ Скопировано в буфер");
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [code]);
 
-  // ── Apply debug fix ─────────────────────────────────────────────────────────
+  // ── Download ──────────────────────────────────────────────────────────────────
+  const handleDownload = useCallback(() => {
+    if (!code) return;
+    const ext = getLangExt(lang);
+    const filename = `code${ext || ".txt"}`;
+    const blob = new Blob([code], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setStatusMsg(`✓ Скачан файл: ${filename}`);
+  }, [code, lang]);
+
+  // ── Clear ─────────────────────────────────────────────────────────────────────
+  const handleClear = useCallback(() => {
+    setCode("");
+    setResult(null);
+    setDebugResult(null);
+    setPhase("idle");
+    setStatusMsg("");
+    setDebugDrawerOpen(false);
+  }, []);
+
+  // ── Apply debug fix ───────────────────────────────────────────────────────────
   const handleApplyFix = useCallback((fixedCode: string) => {
     setCode(fixedCode);
-    setRightTab("output");
     setDebugResult(null);
-    setResult(null);
-    setPhase("idle");
+    setStatusMsg("✓ Исправление применено");
   }, []);
+
+  // ── Prompt key handling ───────────────────────────────────────────────────────
+  const handlePromptKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void generateCode(userQuery);
+      }
+    },
+    [userQuery, generateCode]
+  );
 
   return (
     <div
-      className="h-screen flex flex-col bg-background text-foreground overflow-hidden"
-      data-testid="code-window"
+      className="flex flex-col bg-background text-foreground"
+      style={{ height: "100dvh", overflow: "hidden" }}
+      data-testid="code-window-page"
     >
-      {/* ── Top Bar ─────────────────────────────────────────────────────────── */}
-      <div className="h-10 border-b border-border flex items-center px-3 gap-2 shrink-0 bg-card/50">
-        <Link href="/">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-            data-testid="button-back-to-control"
+      {/* ── Top bar ──────────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/60 bg-card/40 shrink-0" style={{ minHeight: "40px" }}>
+        {/* Logo — home indicator (this IS the home screen) */}
+        <div className="flex items-center gap-1.5" data-testid="app-logo">
+          <svg viewBox="0 0 20 20" className="h-4 w-4 text-primary" fill="none" aria-label="Local Comet">
+            <circle cx="10" cy="10" r="4" fill="currentColor" opacity="0.9" />
+            <path d="M10 2 Q14 6 16 10 Q14 14 10 18" stroke="currentColor" strokeWidth="1.5" fill="none" opacity="0.5" />
+          </svg>
+          <span className="text-[12px] font-semibold text-foreground/80 hidden sm:inline">Local Comet</span>
+        </div>
+
+        {/* Vertical separator */}
+        <div className="w-px h-4 bg-border/60 mx-1 shrink-0" />
+
+        {/* Primary mode tabs: Code (active) | Browser Agent (secondary) */}
+        <div className="flex items-center gap-1" data-testid="mode-tabs">
+          {/* Code tab — active (this page) */}
+          <button
+            className="shrink-0 text-[11px] px-2.5 py-1 rounded font-mono transition-colors bg-primary/20 text-primary border border-primary/30"
+            data-testid="tab-code"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Назад
-          </Button>
-        </Link>
-
-        <div className="w-px h-5 bg-border mx-0.5 shrink-0" />
-
-        {/* Logo */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center">
-            <Zap className="h-3 w-3 text-primary" />
-          </div>
-          <span className="text-[12px] font-semibold text-foreground/80 hidden sm:block">
-            Code IDE
-          </span>
-        </div>
-
-        {/* Status badge */}
-        <div className="flex-1 flex items-center gap-2 min-w-0 ml-1">
-          <StatusBadge phase={phase} exitCode={result?.exitCode} />
-          {userQuery && (
-            <span
-              className="text-[11px] text-muted-foreground truncate hidden md:block max-w-xs"
-              title={userQuery}
-              data-testid="text-user-query"
+            ⚡ Code
+          </button>
+          {/* Browser Agent tab — navigates to /browser-agent */}
+          <Link href="/browser-agent">
+            <button
+              className="shrink-0 text-[11px] px-2.5 py-1 rounded font-mono transition-colors text-muted-foreground hover:text-foreground hover:bg-muted/30"
+              data-testid="tab-browser-agent"
             >
-              {userQuery}
-            </span>
-          )}
+              🌐 Browser Agent
+            </button>
+          </Link>
+          {/* Settings shortcut */}
+          <Link href="/settings">
+            <button
+              className="shrink-0 text-[11px] px-2.5 py-1 rounded font-mono transition-colors text-muted-foreground hover:text-foreground hover:bg-muted/30"
+              data-testid="tab-settings-top"
+            >
+              ⚙ Настройки
+            </button>
+          </Link>
         </div>
+
+        {/* Mode chip strip (editor layout modes) */}
+        <div className="flex items-center gap-1 ml-2 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+          {[
+            { label: "Ред+Визор", active: true },
+            { label: "Редактор", active: false },
+            { label: "Визор", active: false },
+          ].map((chip) => (
+            <button
+              key={chip.label}
+              className={`shrink-0 text-[11px] px-2.5 py-1 rounded font-mono transition-colors ${
+                chip.active
+                  ? "bg-primary/20 text-primary border border-primary/30"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+              }`}
+              data-testid={`mode-chip-${chip.label}`}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Status line in top bar */}
+        <StatusLine phase={phase} statusMsg={statusMsg} lang={lang} />
 
         {/* Theme toggle */}
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 w-7 p-0 shrink-0"
+          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
           onClick={toggleTheme}
-          data-testid="button-toggle-theme"
+          data-testid="button-theme-toggle"
         >
-          {theme === "dark" ? (
-            <Sun className="h-3.5 w-3.5" />
-          ) : (
-            <Moon className="h-3.5 w-3.5" />
-          )}
+          {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
         </Button>
       </div>
 
-      {/* ── Query Bar ───────────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-b border-border bg-card/30 px-3 py-2 flex items-center gap-2">
-        <Terminal className="h-4 w-4 text-muted-foreground/60 shrink-0" />
-        <input
-          type="text"
-          value={userQuery}
-          onChange={(e) => setUserQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !isWorking) {
-              generateAndRun(userQuery);
-            }
-          }}
-          placeholder="Опишите задачу…"
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/40 text-foreground"
-          data-testid="input-code-query"
-        />
-        <Button
-          size="sm"
-          className="h-7 text-xs gap-1.5 shrink-0 bg-primary hover:bg-primary/90"
-          disabled={isWorking || !userQuery.trim()}
-          onClick={() => generateAndRun(userQuery)}
-          data-testid="button-generate"
+      {/* ── Editor + Visor toolbars ───────────────────────────────────────────── */}
+      <div
+        className="flex border-b border-border/60 bg-card/30 shrink-0"
+        style={{ minHeight: "36px" }}
+        ref={containerRef}
+      >
+        {/* Left: Editor toolbar */}
+        <div
+          className="flex items-center gap-1 px-2 py-1 border-r border-border/60 overflow-x-auto"
+          style={{ width: `${leftPct}%`, scrollbarWidth: "none" }}
+          data-testid="editor-toolbar"
         >
-          {phase === "generating" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Zap className="h-3.5 w-3.5" />
-          )}
-          Сгенерировать
-        </Button>
-      </div>
-
-      {/* ── Patch Bar (shown when Правки is clicked) ─────────────────────────── */}
-      {showPatchBar && (
-        <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 flex items-center gap-2">
-          <PenLine className="h-4 w-4 text-amber-400/70 shrink-0" />
-          <input
-            type="text"
-            value={patchQuery}
-            onChange={(e) => setPatchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !isWorking) applyPatch(patchQuery);
-              if (e.key === "Escape") {
-                setShowPatchBar(false);
-                setPatchQuery("");
-              }
-            }}
-            placeholder="Опишите правки для кода…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-amber-400/30 text-foreground"
-            autoFocus
-            data-testid="input-patch-query"
-          />
-          <Button
-            size="sm"
-            className="h-7 text-xs gap-1.5 shrink-0 bg-amber-600 hover:bg-amber-500 text-white border-0"
-            disabled={isWorking || !patchQuery.trim() || !code.trim()}
-            onClick={() => applyPatch(patchQuery)}
-            data-testid="button-apply-patch"
-          >
-            {phase === "patching" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
-            )}
-            Применить
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 text-xs text-muted-foreground"
-            onClick={() => {
-              setShowPatchBar(false);
-              setPatchQuery("");
-            }}
-          >
-            Отмена
-          </Button>
-        </div>
-      )}
-
-      {/* ── Main Split ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-
-        {/* ── LEFT: Code Editor ──────────────────────────────────────────────── */}
-        <div className="flex flex-col min-h-0 border-r border-border" style={{ width: "55%" }}>
-
-          {/* Editor toolbar */}
-          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/60 shrink-0 bg-card/20">
-            {/* Language tabs */}
-            <div className="flex gap-0.5 mr-2">
-              {(["python", "javascript", "bash"] as Lang[]).map((l) => (
-                <button
-                  key={l}
-                  onClick={() => {
-                    if (l !== lang && !isWorking) {
-                      setLang(l);
-                      setCode("");
-                      setResult(null);
-                      setDebugResult(null);
-                      setPhase("idle");
-                    }
-                  }}
-                  className={`px-2.5 py-1 rounded text-[11px] font-medium transition-all ${
-                    lang === l
-                      ? "bg-primary/20 text-primary border border-primary/30"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30"
-                  }`}
-                  data-testid={`button-lang-${l}`}
-                >
-                  {LANG_LABELS[l]}
-                </button>
-              ))}
-            </div>
-
-            {code && (
-              <span className="text-[10px] font-mono text-muted-foreground/40 mr-auto">
-                main{LANG_EXT[lang]}
-              </span>
-            )}
-            {!code && <div className="flex-1" />}
-
-            {/* Copy */}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-[10px] px-2 gap-1 text-muted-foreground"
-              onClick={handleCopy}
-              disabled={!code}
-              data-testid="button-copy-code"
+          {/* Lang badge + selector */}
+          <div className="flex items-center gap-1 mr-1 shrink-0">
+            <Badge
+              variant="secondary"
+              className="text-[10px] font-mono px-1.5 py-0 h-5 shrink-0"
+              data-testid="lang-badge"
             >
-              <Copy className="h-3 w-3" />
-              {copied ? "Скопировано!" : "Копировать"}
-            </Button>
-
-            {/* ── Action Buttons ── */}
-            <div className="flex items-center gap-1 ml-1 border-l border-border/50 pl-2">
-              {/* Правки */}
-              <Button
-                variant="ghost"
-                size="sm"
-                className={`h-6 text-[10px] px-2.5 gap-1 transition-colors ${
-                  showPatchBar
-                    ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/20"
-                    : "text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10"
-                }`}
-                disabled={isWorking || !code.trim()}
-                onClick={() => {
-                  setShowPatchBar((v) => !v);
-                  if (showPatchBar) setPatchQuery("");
-                }}
-                data-testid="button-patch"
-              >
-                <PenLine className="h-3 w-3" />
-                Правки
-              </Button>
-
-              {/* Запустить */}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 text-[10px] px-2.5 gap-1 text-muted-foreground hover:text-blue-400 hover:bg-blue-500/10"
-                onClick={() => runCode()}
-                disabled={isWorking || !code.trim()}
-                data-testid="button-run"
-              >
-                {phase === "running" ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Play className="h-3 w-3" />
-                )}
-                Запустить
-              </Button>
-
-              {/* Дебаг */}
-              <Button
-                size="sm"
-                className="h-6 text-[10px] px-2.5 gap-1 bg-orange-600/80 hover:bg-orange-500 text-white border-0"
-                onClick={debugCode}
-                disabled={isWorking || !code.trim()}
-                data-testid="button-debug"
-              >
-                {phase === "debugging" ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Bug className="h-3 w-3" />
-                )}
-                Дебаг
-              </Button>
-            </div>
+              {getLangDef(lang).emoji} {getLangDef(lang).label}
+            </Badge>
+            <LangSelector lang={lang} onChange={setLang} disabled={isWorking} />
           </div>
 
-          {/* Monaco Editor */}
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="w-px h-4 bg-border/60 shrink-0 mx-0.5" />
+
+          {/* Run */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1 text-[11px] text-green-400 hover:text-green-300 hover:bg-green-500/10 shrink-0"
+            onClick={handleRun}
+            disabled={isWorking || !code.trim()}
+            data-testid="button-run"
+          >
+            <Play className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Запустить</span>
+          </Button>
+
+          {/* Debug */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1 text-[11px] text-orange-400 hover:text-orange-300 hover:bg-orange-500/10 shrink-0"
+            onClick={handleDebug}
+            disabled={isWorking || !code.trim()}
+            data-testid="button-debug"
+          >
+            <Bug className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Дебаг</span>
+          </Button>
+
+          {/* Format */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1 text-[11px] text-sky-400 hover:text-sky-300 hover:bg-sky-500/10 shrink-0"
+            onClick={handleFormat}
+            disabled={isWorking || !code.trim()}
+            data-testid="button-format"
+          >
+            <AlignLeft className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Формат</span>
+          </Button>
+
+          <div className="w-px h-4 bg-border/60 shrink-0 mx-0.5" />
+
+          {/* Copy */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-7 px-2 gap-1 text-[11px] shrink-0 ${copied ? "text-emerald-400" : "text-muted-foreground hover:text-foreground"}`}
+            onClick={handleCopy}
+            disabled={!code.trim()}
+            data-testid="button-copy"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{copied ? "Скопировано" : "Копировать"}</span>
+          </Button>
+
+          {/* Download */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1 text-[11px] text-muted-foreground hover:text-foreground shrink-0"
+            onClick={handleDownload}
+            disabled={!code.trim()}
+            data-testid="button-download"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Скачать</span>
+          </Button>
+
+          {/* Clear */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1 text-[11px] text-muted-foreground hover:text-red-400 hover:bg-red-500/10 shrink-0"
+            onClick={handleClear}
+            disabled={!code.trim() && !result}
+            data-testid="button-clear"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        {/* Right: Visor toolbar */}
+        <div
+          className="flex items-center gap-2 px-3 py-1"
+          style={{ flex: 1 }}
+          data-testid="visor-toolbar"
+        >
+          <Eye className="h-3.5 w-3.5 text-primary/50 shrink-0" />
+          <span className="text-[11px] font-mono font-semibold text-primary/60 uppercase tracking-wider shrink-0">
+            {isPreviewable(lang) ? "Визор" : "Вывод"}
+          </span>
+          <div className="flex-1" />
+          {/* Debug drawer toggle */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-6 px-2 gap-1 text-[10px] shrink-0 ${debugDrawerOpen ? "text-orange-400 bg-orange-500/10" : "text-muted-foreground hover:text-foreground"}`}
+            onClick={() => setDebugDrawerOpen((v) => !v)}
+            data-testid="button-toggle-debug-drawer"
+          >
+            <Terminal className="h-3 w-3" />
+            Консоль
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Main split area ───────────────────────────────────────────────────── */}
+      <div
+        className="flex flex-1 min-h-0 relative"
+        ref={containerRef}
+      >
+        {/* LEFT: Monaco Editor */}
+        <div
+          className="flex flex-col min-h-0 border-r border-border/60"
+          style={{ width: `${leftPct}%` }}
+          data-testid="editor-pane"
+        >
+          {/* Editor with optional debug drawer */}
+          <div className="flex-1 min-h-0">
             <MonacoEditorWrapper
               value={code}
               onChange={setCode}
               language={lang}
-              placeholder={`${LANG_COMMENT[lang]} Код появится здесь после генерации…`}
-              testId="monaco-code-editor"
+              placeholder={`// Сгенерируйте код через строку ниже…\n// Опишите задачу: лендинг, игра, скрипт Python, дашборд, алгоритм…`}
+              testId="monaco-editor-main"
             />
           </div>
+
+          {/* Debug / Output drawer at bottom of editor */}
+          <DebugDrawer
+            open={debugDrawerOpen}
+            onClose={() => setDebugDrawerOpen(false)}
+            phase={phase}
+            result={result}
+            debugResult={debugResult}
+            onApplyFix={handleApplyFix}
+          />
         </div>
 
-        {/* ── RIGHT: Tabbed Panel ─────────────────────────────────────────────── */}
-        <div className="flex flex-col min-h-0 overflow-hidden" style={{ width: "45%" }}>
-          <Tabs
-            value={rightTab}
-            onValueChange={(v) => setRightTab(v as typeof rightTab)}
-            className="flex flex-col h-full"
-          >
-            {/* Tab header */}
-            <div className="shrink-0 border-b border-border/60 bg-card/20 px-3 py-1.5 flex items-center gap-1">
-              <TabsList className="h-6 p-0.5 bg-muted/30 gap-0.5">
-                <TabsTrigger
-                  value="output"
-                  className="h-5 px-2.5 text-[11px] gap-1 data-[state=active]:bg-background data-[state=active]:text-foreground"
-                  data-testid="tab-output"
-                >
-                  <Terminal className="h-3 w-3" />
-                  Вывод
-                  {result && (
-                    <span
-                      className={`ml-0.5 w-1.5 h-1.5 rounded-full ${
-                        result.exitCode === 0
-                          ? "bg-emerald-400"
-                          : "bg-red-400"
-                      }`}
-                    />
-                  )}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="debug"
-                  className="h-5 px-2.5 text-[11px] gap-1 data-[state=active]:bg-background data-[state=active]:text-foreground"
-                  data-testid="tab-debug"
-                >
-                  <Bug className="h-3 w-3" />
-                  Дебаг
-                  {debugResult && (
-                    <span className="ml-0.5 w-1.5 h-1.5 rounded-full bg-orange-400" />
-                  )}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="info"
-                  className="h-5 px-2.5 text-[11px] gap-1 data-[state=active]:bg-background data-[state=active]:text-foreground"
-                  data-testid="tab-info"
-                >
-                  <Info className="h-3 w-3" />
-                  Инфо
-                </TabsTrigger>
-              </TabsList>
-            </div>
+        {/* Drag divider */}
+        <div
+          className="w-1 cursor-col-resize bg-border/40 hover:bg-primary/40 transition-colors shrink-0 active:bg-primary/60"
+          onMouseDown={onMouseDown}
+          data-testid="split-divider"
+        />
 
-            {/* Tab content */}
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <TabsContent
-                value="output"
-                className="h-full m-0 data-[state=inactive]:hidden"
+        {/* RIGHT: Visor / Preview */}
+        <div className="flex flex-col min-h-0" style={{ flex: 1 }} data-testid="visor-pane">
+          <VisorPane
+            code={code}
+            lang={lang}
+            phase={phase}
+            result={result}
+          />
+        </div>
+      </div>
+
+      {/* ── Bottom Prompt Bar (full width, Code VM style) ─────────────────────── */}
+      <div
+        className="border-t border-border/60 bg-card/40 shrink-0"
+        data-testid="prompt-bar"
+      >
+        <div className="flex items-end gap-2 p-2">
+          {/* Main prompt textarea */}
+          <div className="flex-1 relative">
+            <textarea
+              ref={promptRef}
+              value={userQuery}
+              onChange={(e) => setUserQuery(e.target.value)}
+              onKeyDown={handlePromptKeyDown}
+              placeholder="Опишите задачу: лендинг, игра, скрипт на Python, дашборд, алгоритм… (Enter — сгенерировать, Shift+Enter — новая строка)"
+              rows={2}
+              className="w-full bg-muted/20 border border-border/50 rounded px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/40 resize-none focus:outline-none focus:border-primary/40 focus:bg-muted/30 transition-colors font-sans leading-relaxed"
+              disabled={isWorking}
+              data-testid="input-prompt"
+            />
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-1 shrink-0 pb-0.5">
+            {/* Generate — primary CTA */}
+            <Button
+              className="h-9 px-3 gap-1.5 text-[12px] font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shrink-0"
+              onClick={() => generateCode(userQuery)}
+              disabled={isWorking || !userQuery.trim()}
+              data-testid="button-generate"
+            >
+              {phase === "generating" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              Сгенерировать
+            </Button>
+
+            {/* Правки — refine existing code */}
+            <Button
+              variant="outline"
+              className="h-9 px-3 gap-1.5 text-[12px] border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40 shrink-0"
+              onClick={() => applyPatch(userQuery)}
+              disabled={isWorking || !userQuery.trim() || !code.trim()}
+              data-testid="button-patch"
+            >
+              {phase === "patching" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <PenLine className="h-3.5 w-3.5" />
+              )}
+              Правки
+            </Button>
+
+            {/* Save / Download */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 px-2 gap-1 text-[11px] text-muted-foreground hover:text-foreground shrink-0"
+              onClick={handleDownload}
+              disabled={!code.trim()}
+              data-testid="button-save"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Сохранить</span>
+            </Button>
+
+            {/* Open in browser */}
+            {isPreviewable(lang) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2 gap-1 text-[11px] text-muted-foreground hover:text-sky-400 shrink-0"
+                onClick={() => {
+                  if (!code.trim()) return;
+                  const blob = new Blob([code], { type: "text/html" });
+                  const url = URL.createObjectURL(blob);
+                  window.open(url, "_blank");
+                  setTimeout(() => URL.revokeObjectURL(url), 10000);
+                }}
+                disabled={!code.trim()}
+                data-testid="button-open-in-browser"
               >
-                <OutputTab phase={phase} result={result} />
-              </TabsContent>
-              <TabsContent
-                value="debug"
-                className="h-full m-0 data-[state=inactive]:hidden"
-              >
-                <DebugTab
-                  phase={phase}
-                  result={result}
-                  debugResult={debugResult}
-                  onApplyFix={handleApplyFix}
-                />
-              </TabsContent>
-              <TabsContent
-                value="info"
-                className="h-full m-0 data-[state=inactive]:hidden"
-              >
-                <InfoTab
-                  lang={lang}
-                  code={code}
-                  userQuery={userQuery}
-                  sessionId={sessionId}
-                />
-              </TabsContent>
-            </div>
-          </Tabs>
+                <ExternalLink className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Открыть</span>
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

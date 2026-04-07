@@ -97,7 +97,11 @@ function AppGate() {
 function AppRouter() {
   return (
     <Switch>
-      <Route path="/" component={ControlCenter} />
+      {/* Code-first workspace is the primary entry point */}
+      <Route path="/" component={CodeWindowPage} />
+      {/* Browser-agent / control-center is a secondary mode */}
+      <Route path="/browser-agent" component={ControlCenter} />
+      {/* Legacy /code route still works */}
       <Route path="/code" component={CodeWindowPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/kwork" component={KworkLeadsPage} />

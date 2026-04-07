@@ -897,6 +897,56 @@ export async function registerRoutes(
     }
   });
 
+  // ── Code Formatter ─────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/sandbox/format
+   * Body: { code: string, language: string }
+   *
+   * Formats code using basic server-side rules.
+   * For Python: normalizes indentation and trailing whitespace.
+   * For JS/TS: basic cleanup.
+   * Returns { formatted: string } on success.
+   */
+  app.post("/api/sandbox/format", async (req, res) => {
+    try {
+      const { code, language } = req.body;
+      if (!code || typeof code !== "string") {
+        return res.status(400).json({ error: "Требуется code" });
+      }
+
+      const lang = (language || "javascript") as string;
+      let formatted = code;
+
+      if (lang === "python") {
+        // Basic Python: normalize trailing whitespace, ensure newline at end
+        formatted = code
+          .split("\n")
+          .map((line: string) => line.trimEnd())
+          .join("\n")
+          .trimEnd() + "\n";
+      } else if (lang === "html") {
+        // Basic HTML: trim trailing whitespace per line
+        formatted = code
+          .split("\n")
+          .map((line: string) => line.trimEnd())
+          .join("\n")
+          .trimEnd() + "\n";
+      } else {
+        // JS/TS/CSS/bash: just clean trailing whitespace
+        formatted = code
+          .split("\n")
+          .map((line: string) => line.trimEnd())
+          .join("\n")
+          .trimEnd() + "\n";
+      }
+
+      res.json({ formatted, language: lang, ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Computer flow: natural-language → agent run ──────────────────────────
 
   /**
@@ -926,9 +976,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Требуется query" });
       }
       const sid = sessionId || `session-${Date.now()}`;
-      const lang = (requestedLang && ["python", "javascript", "typescript", "bash"].includes(requestedLang)
+      const lang = (requestedLang && ["python", "javascript", "typescript", "bash", "html", "css"].includes(requestedLang)
         ? requestedLang
-        : detectCodeLanguage(query)) as "python" | "javascript" | "typescript" | "bash";
+        : detectCodeLanguage(query)) as "python" | "javascript" | "typescript" | "bash" | "html" | "css";
 
       const lower = query.toLowerCase();
       let code: string | null = null;
@@ -951,9 +1001,14 @@ export async function registerRoutes(
               temperature: parseFloat(settings.temperature) || 0.2,
               maxTokens: Math.min(settings.maxTokens || 1024, 2048),
             };
-            const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : "Python";
-            const systemPrompt = `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
-            const userMsg = `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
+            const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : lang === "html" ? "HTML" : lang === "css" ? "CSS" : "Python";
+            const isWebLangInner = lang === "html" || lang === "css";
+            const systemPrompt = isWebLangInner
+              ? `You are an expert ${langName} developer. Write ONLY complete, working ${langName} code — no markdown fences, no explanations. For HTML include full page structure with <!DOCTYPE html>. Output raw code only.`
+              : `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
+            const userMsg = isWebLangInner
+              ? `Write complete, working ${langName} for: ${query}\n\nRequirements:\n- Self-contained (all CSS/JS inline for HTML)\n- Visually polished\n- Output raw ${langName} only, no markdown`
+              : `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
 
             // Hard timeout: if LLM doesn't respond within 8 s, fall through to template.
             const LLM_TIMEOUT_MS = 8_000;
@@ -989,8 +1044,13 @@ export async function registerRoutes(
         generationSource = "template";
       }
 
-      // ── Run the generated code in the sandbox ─────────────────────────────
-      const sandboxResult = await runCodeSandbox(code, lang, sid, 15_000);
+      // ── Run the generated code in the sandbox (skip for HTML/CSS) ──────────
+      const isWebLang = lang === "html" || lang === "css";
+      let sandboxResult: any = null;
+
+      if (!isWebLang) {
+        sandboxResult = await runCodeSandbox(code, lang as any, sid, 15_000);
+      }
 
       res.json({
         ok: true,
@@ -1630,7 +1690,125 @@ function isTemplateOnlyRequest(lower: string): boolean {
  * Covers common algorithm, data, utility and file I/O requests in RU + EN.
  * Falls back to a meaningful skeleton (not a dummy result=42) for generic requests.
  */
-function generateCodeTemplate(query: string, lower: string, lang: "python" | "javascript" | "typescript" | "bash"): string {
+function generateCodeTemplate(query: string, lower: string, lang: "python" | "javascript" | "typescript" | "bash" | "html" | "css"): string {
+  // HTML template
+  if (lang === "html") {
+    const isGame = /игр[уаыею]|игру|игра|игры|game/i.test(lower);
+    const isSite = /сайт|лендинг|website|landing|page/i.test(lower);
+    const isCalc = /калькулятор|calculator/i.test(lower);
+    if (isCalc) {
+      return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Калькулятор</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #1a1a2e; font-family: sans-serif; }
+  .calc { background: #16213e; border-radius: 20px; padding: 20px; width: 280px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  .display { background: #0f3460; color: #e2e8f0; font-size: 2rem; text-align: right; padding: 16px; border-radius: 12px; margin-bottom: 16px; min-height: 70px; word-break: break-all; }
+  .buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  button { background: #1a1a2e; color: #e2e8f0; border: none; border-radius: 10px; padding: 18px 0; font-size: 1.1rem; cursor: pointer; transition: background 0.15s; }
+  button:hover { background: #0f3460; }
+  .btn-op { background: #e94560; color: #fff; }
+  .btn-eq { background: #4ade80; color: #000; grid-column: span 2; }
+  .btn-clear { background: #f59e0b; color: #000; }
+</style>
+</head>
+<body>
+<div class="calc">
+  <div class="display" id="disp">0</div>
+  <div class="buttons">
+    <button class="btn-clear" onclick="clear()">AC</button>
+    <button class="btn-op" onclick="input('(')">( </button>
+    <button class="btn-op" onclick="input(')')"> )</button>
+    <button class="btn-op" onclick="input('/')">÷</button>
+    <button onclick="input('7')">7</button><button onclick="input('8')">8</button><button onclick="input('9')">9</button>
+    <button class="btn-op" onclick="input('*')">×</button>
+    <button onclick="input('4')">4</button><button onclick="input('5')">5</button><button onclick="input('6')">6</button>
+    <button class="btn-op" onclick="input('-')">−</button>
+    <button onclick="input('1')">1</button><button onclick="input('2')">2</button><button onclick="input('3')">3</button>
+    <button class="btn-op" onclick="input('+')">\ +</button>
+    <button onclick="input('0')">0</button><button onclick="input('.')">.</button>
+    <button class="btn-eq" onclick="calc()">＝</button>
+  </div>
+</div>
+<script>
+  let expr = "";
+  const disp = document.getElementById("disp");
+  function input(v) { expr += v; disp.textContent = expr || "0"; }
+  function clear() { expr = ""; disp.textContent = "0"; }
+  function calc() { try { expr = String(eval(expr)); } catch { expr = "Err"; } disp.textContent = expr; }
+<\/script>
+</body>
+</html>`;
+    }
+    // Generic HTML skeleton
+    const title = query.slice(0, 60);
+    return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .container { max-width: 720px; width: 100%; padding: 48px 24px; text-align: center; }
+  h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 16px; background: linear-gradient(135deg, #6366f1, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  p { color: #94a3b8; font-size: 1.1rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>${title}</h1>
+  <p>Создано с помощью Local Comet IDE</p>
+</div>
+</body>
+</html>`;
+  }
+
+  // CSS template
+  if (lang === "css") {
+    return `/* ${query} */
+
+:root {
+  --primary: #6366f1;
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --text: #e2e8f0;
+  --muted: #64748b;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 16px;
+}`;
+  }
+
   if (lang === "python") {
     if (/hello.?world|привет.?мир/i.test(lower)) {
       return 'print("Hello, World!")';

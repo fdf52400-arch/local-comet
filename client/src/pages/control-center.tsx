@@ -32,6 +32,7 @@ import {
   MessageSquare, BookOpen, TrendingUp,
   CircleDot, Briefcase,
   Command as CommandIcon,
+  Code2,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { Link, useLocation } from "wouter";
@@ -1231,6 +1232,10 @@ export default function ControlCenter() {
   // --- Command input ---
   const [commandValue, setCommandValue] = useState("");
   const [commandHint, setCommandHint] = useState<string | null>(null);
+
+  // --- Explicit main-function inputs (hero panel) ---
+  const [codeQuery, setCodeQuery] = useState("");
+  const [agentQuery, setAgentQuery] = useState("");
   const [browsingHistory, setBrowsingHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
@@ -1611,6 +1616,25 @@ export default function ControlCenter() {
     navigate(`/code?q=${encoded}`);
   }, [navigate]);
 
+  // ── Explicit hero panel: Code Generator ──────────────────────────────────
+  // Direct submit — no intent parsing, always routes to code workflow.
+  const handleCodeSubmit = useCallback(() => {
+    const raw = codeQuery.trim();
+    if (!raw) return;
+    setCodeQuery("");
+    const encoded = encodeURIComponent(raw);
+    navigate(`/code?q=${encoded}`);
+  }, [codeQuery, navigate]);
+
+  // ── Explicit hero panel: Browser Agent ──────────────────────────────────
+  // Direct submit — no intent parsing, always routes to browser agent workflow.
+  const handleAgentSubmit = useCallback(() => {
+    const raw = agentQuery.trim();
+    if (!raw) return;
+    setAgentQuery("");
+    computerRunMutation.mutate({ query: raw, sessionId: activeSession, workspaceId: activeWorkspaceId, maxSteps });
+  }, [agentQuery, computerRunMutation, activeSession, activeWorkspaceId, maxSteps]);
+
   // ── CORE: Command Submit Handler (intent parsing) ──
   const handleCommandSubmit = useCallback(() => {
     const raw = commandValue.trim();
@@ -1740,6 +1764,14 @@ export default function ControlCenter() {
 
         {/* Status + theme toggle */}
         <div className="flex items-center gap-2 pl-2 shrink-0">
+          {/* Back to Code workspace — primary mode */}
+          <Link href="/">
+            <Button variant="outline" size="sm" className="h-6 px-2 text-[10px] gap-1 border-primary/30 text-primary hover:bg-primary/10" data-testid="button-nav-code">
+              <Code2 className="h-3 w-3" />
+              ⚡ Code
+            </Button>
+          </Link>
+          <div className="w-px h-4 bg-border/60 shrink-0" />
           <div className="flex items-center gap-1">
             <div className={`w-1.5 h-1.5 rounded-full ${healthQuery.data?.status === "ok" ? "bg-emerald-500 status-pulse" : "bg-red-500"}`} />
             <span className="text-[9px] text-muted-foreground">SRV</span>
@@ -1919,6 +1951,20 @@ export default function ControlCenter() {
           )}
         </div>
 
+        {/* Code IDE shortcut */}
+        <Link href="/code">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 text-xs px-3 text-primary border-primary/30 hover:bg-primary/10"
+            data-testid="button-open-code-ide"
+            title="Открыть Code IDE — редактор + preview + sandbox"
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            Code IDE
+          </Button>
+        </Link>
+
         {/* Sidecar toggle */}
         <Button
           variant={sidecarOpen ? "default" : "outline"}
@@ -1972,60 +2018,158 @@ export default function ControlCenter() {
               )}
             </div>
           ) : (
-            /* ── Computer-first Onboarding Empty State ── */
-            <div className="flex-1 flex items-center justify-center">
-              <div className="max-w-lg text-center px-8">
-                {/* Logo */}
-                <div className="relative inline-flex items-center justify-center mb-5">
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-label="Local Comet" className="text-primary">
-                      <circle cx="16" cy="16" r="6" stroke="currentColor" strokeWidth="2" />
-                      <path d="M16 4 L18 10 L16 8 L14 10 Z" fill="currentColor" opacity="0.7" />
-                      <path d="M4 16 L10 14 L8 16 L10 18 Z" fill="currentColor" opacity="0.5" />
-                      <path d="M28 16 L22 18 L24 16 L22 14 Z" fill="currentColor" opacity="0.5" />
-                      <path d="M16 28 L14 22 L16 24 L18 22 Z" fill="currentColor" opacity="0.7" />
-                      <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 4" opacity="0.3" />
-                    </svg>
+            /* ── Main Functions Hero — two explicit entry points ── */
+            <div className="flex-1 flex flex-col items-center justify-start pt-10 pb-8 px-4 overflow-y-auto">
+              {/* Header */}
+              <div className="flex items-center gap-3 mb-8">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center shrink-0">
+                  <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-label="Local Comet" className="text-primary">
+                    <circle cx="16" cy="16" r="6" stroke="currentColor" strokeWidth="2" />
+                    <path d="M16 4 L18 10 L16 8 L14 10 Z" fill="currentColor" opacity="0.7" />
+                    <path d="M4 16 L10 14 L8 16 L10 18 Z" fill="currentColor" opacity="0.5" />
+                    <path d="M28 16 L22 18 L24 16 L22 14 Z" fill="currentColor" opacity="0.5" />
+                    <path d="M16 28 L14 22 L16 24 L18 22 Z" fill="currentColor" opacity="0.7" />
+                    <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 4" opacity="0.3" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-base font-bold leading-tight">Local Comet</h1>
+                  <p className="text-[11px] text-muted-foreground">Выберите функцию и введите запрос</p>
+                </div>
+              </div>
+
+              {/* Provider status */}
+              <div className="w-full max-w-2xl mb-6">
+                <ProviderConnectBlock />
+              </div>
+
+              {/* ══ TWO MAIN FUNCTION PANELS ══ */}
+              <div className="w-full max-w-2xl grid grid-cols-2 gap-4 mb-8" data-testid="main-functions-grid">
+
+                {/* ── Panel 1: Code Generator ── */}
+                <div
+                  className="flex flex-col rounded-xl border-2 border-primary/25 bg-card/60 hover:border-primary/50 transition-colors overflow-hidden"
+                  data-testid="panel-code-generator"
+                >
+                  {/* Panel header */}
+                  <div className="flex items-center gap-2.5 px-4 py-3 bg-primary/5 border-b border-primary/15">
+                    <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
+                      <Code2 className="h-4 w-4 text-primary" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold leading-tight">Генератор кода</div>
+                      <div className="text-[10px] text-muted-foreground">Текст → рабочий код</div>
+                    </div>
+                  </div>
+
+                  {/* Panel body */}
+                  <div className="flex-1 flex flex-col p-4 gap-3">
+                    <Textarea
+                      placeholder="Опиши код, игру, приложение или сайт, который нужно создать…"
+                      value={codeQuery}
+                      onChange={e => setCodeQuery(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleCodeSubmit(); }}
+                      className="min-h-[90px] text-xs resize-none bg-background/60"
+                      rows={4}
+                      data-testid="input-code-query"
+                    />
+                    <Button
+                      onClick={handleCodeSubmit}
+                      disabled={!codeQuery.trim()}
+                      className="w-full gap-2 font-semibold"
+                      data-testid="button-generate-code"
+                    >
+                      <Code2 className="h-4 w-4" />
+                      Сгенерировать код
+                    </Button>
+                    {/* Code examples */}
+                    <div className="space-y-1">
+                      <p className="text-[9px] text-muted-foreground/40 uppercase tracking-wider">Примеры</p>
+                      {[
+                        { text: "напиши игру змейку", icon: "🎮" },
+                        { text: "сделай калькулятор", icon: "📱" },
+                        { text: "создай телеграм бота", icon: "🤖" },
+                      ].map((ex, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { setCodeQuery(ex.text); }}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-primary/8 transition-colors text-left group"
+                          data-testid={`button-code-example-${i}`}
+                        >
+                          <span className="text-sm opacity-60">{ex.icon}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground group-hover:text-primary transition-colors">{ex.text}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
-                <h1 className="text-lg font-bold mb-1">Local Comet</h1>
-                <p className="text-sm text-muted-foreground mb-6">
-                  Пишите команды естественным языком. Computer выполнит.
-                </p>
+                {/* ── Panel 2: Browser Agent ── */}
+                <div
+                  className="flex flex-col rounded-xl border-2 border-blue-500/25 bg-card/60 hover:border-blue-500/50 transition-colors overflow-hidden"
+                  data-testid="panel-browser-agent"
+                >
+                  {/* Panel header */}
+                  <div className="flex items-center gap-2.5 px-4 py-3 bg-blue-500/5 border-b border-blue-500/15">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/15 flex items-center justify-center shrink-0">
+                      <Bot className="h-4 w-4 text-blue-400" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold leading-tight">Браузерный агент</div>
+                      <div className="text-[10px] text-muted-foreground">Автономные задачи в браузере</div>
+                    </div>
+                  </div>
 
-                {/* ── Provider Connection Block ── */}
-                <ProviderConnectBlock />
-
-                {/* Example Commands — main UX element */}
-                <div className="space-y-1.5 mb-6">
-                  {EXAMPLE_COMMANDS.map((cmd, i) => (
-                    <button
-                      key={i}
-                      onClick={() => handleExampleClick(cmd.text)}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border/50 hover:border-primary/30 hover:bg-accent/30 transition-all group text-left"
-                      data-testid={`button-example-${i}`}
+                  {/* Panel body */}
+                  <div className="flex-1 flex flex-col p-4 gap-3">
+                    <Textarea
+                      placeholder="Опиши задачу для браузерного агента… например: найди в google последние новости об AI"
+                      value={agentQuery}
+                      onChange={e => setAgentQuery(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAgentSubmit(); }}
+                      className="min-h-[90px] text-xs resize-none bg-background/60"
+                      rows={4}
+                      data-testid="input-agent-query"
+                    />
+                    <Button
+                      onClick={handleAgentSubmit}
+                      disabled={!agentQuery.trim() || computerRunMutation.isPending}
+                      className="w-full gap-2 font-semibold bg-blue-600 hover:bg-blue-700 text-white border-0"
+                      data-testid="button-run-agent-hero"
                     >
-                      <span className="text-base w-6 text-center shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">{cmd.icon}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium text-foreground/80 group-hover:text-primary transition-colors font-mono">{cmd.text}</div>
-                        <div className="text-[10px] text-muted-foreground/50">{cmd.description}</div>
-                      </div>
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-primary/50 transition-colors shrink-0" />
-                    </button>
-                  ))}
-                </div>
-
-                {/* Capabilities grid */}
-                <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground/40">
-                  {CAPABILITIES.map((cap, i) => (
-                    <span key={i} className="flex items-center gap-1">
-                      <span>{cap.icon}</span>
-                      <span>{cap.title}</span>
-                    </span>
-                  ))}
+                      {computerRunMutation.isPending
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Bot className="h-4 w-4" />
+                      }
+                      Запустить агента
+                    </Button>
+                    {/* Agent examples */}
+                    <div className="space-y-1">
+                      <p className="text-[9px] text-muted-foreground/40 uppercase tracking-wider">Примеры</p>
+                      {[
+                        { text: "открой github и найди trending repos", icon: "🌐" },
+                        { text: "найди в google нейросети 2026", icon: "🔍" },
+                        { text: "открой сайт habr.com", icon: "📰" },
+                      ].map((ex, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { setAgentQuery(ex.text); }}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-blue-500/8 transition-colors text-left group"
+                          data-testid={`button-agent-example-${i}`}
+                        >
+                          <span className="text-sm opacity-60">{ex.icon}</span>
+                          <span className="text-[10px] font-mono text-muted-foreground group-hover:text-blue-400 transition-colors">{ex.text}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
+
+              {/* Tip line */}
+              <p className="text-[10px] text-muted-foreground/30 text-center">
+                Ctrl+Enter для отправки · Команды без роутинга: напишите задачу и нажмите нужную кнопку
+              </p>
             </div>
           )}
         </main>
