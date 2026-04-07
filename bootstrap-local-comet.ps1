@@ -9,6 +9,7 @@ Set-Location $env:USERPROFILE
 
 if (Test-Path (Join-Path $repoPath '.git')) {
   Write-Host 'Updating existing repository...' -ForegroundColor Yellow
+  git -C $repoPath remote set-url origin $repoUrl
   git -C $repoPath fetch origin
   git -C $repoPath reset --hard origin/master
   git -C $repoPath clean -fdx
