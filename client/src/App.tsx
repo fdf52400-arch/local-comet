@@ -6,14 +6,19 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme";
-import ControlCenter from "@/pages/control-center";
-import SettingsPage from "@/pages/settings";
-import NotFound from "@/pages/not-found";
-import KworkLeadsPage from "@/pages/kwork-leads";
-import ProviderOnboarding from "@/pages/provider-onboarding";
-import CodeWindowPage from "@/pages/code-window";
+import { AppShell } from "@/components/app-shell";
 
-// Error boundary to prevent blank screen
+// Pages
+import HomePage from "@/pages/home";
+import CodeWindowPage from "@/pages/code-window";
+import BrowserAgentPage from "@/pages/browser-agent";
+import ProvidersPage from "@/pages/providers";
+import LogsPage from "@/pages/logs";
+import ProviderOnboarding from "@/pages/provider-onboarding";
+import NotFound from "@/pages/not-found";
+
+// ─── Error boundary ───────────────────────────────────────────────────────────
+
 class ErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null }
@@ -36,7 +41,7 @@ class ErrorBoundary extends Component<
             onClick={() => { this.setState({ error: null }); window.location.reload(); }}
             style={{ marginTop: "1rem", padding: "0.5rem 1rem", background: "#333", color: "#fff", border: "1px solid #555", borderRadius: "4px", cursor: "pointer" }}
           >
-            Перезагрузить
+            Reload
           </button>
         </div>
       );
@@ -45,17 +50,10 @@ class ErrorBoundary extends Component<
   }
 }
 
-// ─── Onboarding gate ─────────────────────────────────────────────────────────
-//
-// Determines whether we should show the onboarding screen or the main app.
-// Logic: show onboarding if settings are not loaded yet (first load) OR if
-// the settings have no model configured (empty model field).
-// Once the user completes onboarding (saves config), we flip `configured` to
-// true and show the main app.
+// ─── Onboarding gate ──────────────────────────────────────────────────────────
 
 function isConfigured(settings: any): boolean {
   if (!settings) return false;
-  // A config is considered "done" when a model name is saved
   return !!(settings.model && settings.model.trim().length > 0);
 }
 
@@ -64,11 +62,10 @@ function AppGate() {
 
   const settingsQuery = useQuery<any>({
     queryKey: ["/api/settings"],
-    // Re-check every 30 seconds in case something changes externally
     staleTime: 30_000,
   });
 
-  // While loading, render nothing (avoids flash)
+  // Loading spinner
   if (settingsQuery.isLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -81,9 +78,7 @@ function AppGate() {
 
   if (!configured) {
     return (
-      <ProviderOnboarding
-        onComplete={() => setForceConfigured(true)}
-      />
+      <ProviderOnboarding onComplete={() => setForceConfigured(true)} />
     );
   }
 
@@ -94,21 +89,35 @@ function AppGate() {
   );
 }
 
+// ─── Router inside shell ──────────────────────────────────────────────────────
+
 function AppRouter() {
   return (
-    <Switch>
-      {/* Code-first workspace is the primary entry point */}
-      <Route path="/" component={CodeWindowPage} />
-      {/* Browser-agent / control-center is a secondary mode */}
-      <Route path="/browser-agent" component={ControlCenter} />
-      {/* Legacy /code route still works */}
-      <Route path="/code" component={CodeWindowPage} />
-      <Route path="/settings" component={SettingsPage} />
-      <Route path="/kwork" component={KworkLeadsPage} />
-      <Route component={NotFound} />
-    </Switch>
+    <AppShell>
+      <Switch>
+        {/* Primary entry — home/dashboard */}
+        <Route path="/" component={HomePage} />
+
+        {/* Code Studio — main coding workflow */}
+        <Route path="/code" component={CodeWindowPage} />
+
+        {/* Browser Agent — autonomous browser tasks */}
+        <Route path="/browser-agent" component={BrowserAgentPage} />
+
+        {/* Providers — model & runtime config */}
+        <Route path="/providers" component={ProvidersPage} />
+
+        {/* Logs & Tasks — history */}
+        <Route path="/logs" component={LogsPage} />
+
+        {/* 404 */}
+        <Route component={NotFound} />
+      </Switch>
+    </AppShell>
   );
 }
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
 
 function App() {
   return (
