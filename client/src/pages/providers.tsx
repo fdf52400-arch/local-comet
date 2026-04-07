@@ -234,7 +234,7 @@ export default function ProvidersPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("PATCH", "/api/settings", {
+      return apiRequest("POST", "/api/settings", {
         providerType: selectedProvider,
         baseUrl,
         port,
@@ -256,7 +256,7 @@ export default function ProvidersPage() {
     setChecking(true);
     setCheckStatus(null);
     try {
-      const res = await apiRequest("POST", "/api/provider/check", {
+      const res = await apiRequest("POST", "/api/providers/check", {
         providerType: selectedProvider,
         baseUrl,
         port,
@@ -275,7 +275,7 @@ export default function ProvidersPage() {
   const handleLoadModels = async () => {
     setModelListLoading(true);
     try {
-      const res = await apiRequest("POST", "/api/provider/models", {
+      const res = await apiRequest("POST", "/api/providers/models", {
         providerType: selectedProvider,
         baseUrl,
         port,

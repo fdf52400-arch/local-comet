@@ -123,7 +123,8 @@ function ProviderBanner() {
 
   const hosted = isHostedPreview();
   const s = statusQuery.data;
-  const settings = s?.settings;
+  // /api/computer/status returns { provider: { type, model, configured, availability } }
+  const provider = s?.provider;
 
   if (statusQuery.isLoading) {
     return (
@@ -134,7 +135,7 @@ function ProviderBanner() {
     );
   }
 
-  const configured = settings?.model && settings.model.trim().length > 0;
+  const configured = provider?.configured && provider?.model && provider.model.trim().length > 0;
 
   if (!configured) {
     return (
@@ -155,8 +156,9 @@ function ProviderBanner() {
     );
   }
 
-  const providerOk = s?.providerStatus?.ok;
-  const isLocal = ["ollama", "lmstudio"].includes(settings.providerType);
+  // availability: { ok, status, message } | null
+  const providerOk = provider?.availability?.ok;
+  const isLocal = ["ollama", "lmstudio"].includes(provider?.type ?? "");
   const ProviderIcon = isLocal ? Server : Cloud;
 
   return (
@@ -169,8 +171,8 @@ function ProviderBanner() {
     }`}>
       <ProviderIcon className={`h-4 w-4 flex-shrink-0 ${providerOk ? "text-green-500" : providerOk === false ? "text-destructive" : "text-muted-foreground"}`} />
       <div className="flex-1 min-w-0 flex items-center gap-2">
-        <span className="text-sm font-medium text-foreground capitalize">{settings.providerType}</span>
-        <span className="text-xs text-muted-foreground font-mono truncate">{settings.model}</span>
+        <span className="text-sm font-medium text-foreground capitalize">{provider?.type}</span>
+        <span className="text-xs text-muted-foreground font-mono truncate">{provider?.model}</span>
         {hosted && isLocal && (
           <Badge variant="outline" className="text-[10px] text-yellow-600 border-yellow-500/30">preview-only</Badge>
         )}

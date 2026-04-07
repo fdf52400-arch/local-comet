@@ -63,11 +63,14 @@ function ProviderStatus() {
   });
 
   const s = statusQuery.data;
-  const provider = s?.settings?.providerType;
-  const model = s?.settings?.model;
-  const providerOk = s?.providerStatus?.ok;
+  // /api/computer/status returns { provider: { type, model, configured, availability } }
+  const providerInfo = s?.provider;
+  const provider = providerInfo?.type;
+  const model = providerInfo?.model;
+  // availability: { ok, status, message } | null
+  const providerOk = providerInfo?.availability?.ok;
   const isLocal = provider ? ["ollama", "lmstudio"].includes(provider) : false;
-  const isConfigured = !!(provider && model);
+  const isConfigured = !!(providerInfo?.configured && provider && model);
 
   if (!isConfigured) {
     return (
