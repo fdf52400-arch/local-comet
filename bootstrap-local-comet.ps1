@@ -2,12 +2,11 @@
 <#
 .SYNOPSIS
   Bootstrap Local Comet on Windows.
-  - Hard-kills any process on port 5051 before starting.
-  - Clones / updates the repo and rebuilds.
-  - Polls /api/health until the server is genuinely ready.
-  - Opens the correct URL (127.0.0.1:5051/#/) only after the server responds.
-  - Appends a cache-busting query string to prevent the browser from serving a
-    stale tab / cached index.html.
+  - Single-instance guard: if port 5051 is already listening AND /api/health
+    returns HTTP 200, skip everything and just print the URL.
+  - Otherwise: hard-kills any stale process on port 5051, clones/updates the
+    repo, rebuilds, starts the server, polls /api/health until ready.
+  - Does NOT open the browser automatically — prints the URL for the user.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -18,15 +17,41 @@ $repoPath      = Join-Path $env:USERPROFILE 'local-comet'
 $port          = 5051
 $host_addr     = '127.0.0.1'
 $healthUrl     = "http://$host_addr`:$port/api/health"
+$appUrl        = "http://$host_addr`:$port/#/"
 $healthTimeout = 60          # seconds to wait for server ready
 $healthPoll    = 1           # seconds between health probes
 # ------------------------------------------------------------------------------
 
 Write-Host ''
 Write-Host '==========================================' -ForegroundColor Cyan
-Write-Host '  Local Comet  -  bootstrap starting'      -ForegroundColor Cyan
+Write-Host '  Local Comet  —  bootstrap'               -ForegroundColor Cyan
 Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host ''
+
+# -- 0. Single-instance guard --------------------------------------------------
+# If the server is already running and healthy, do nothing — just print the URL.
+function Test-ServerHealthy {
+  try {
+    $resp = Invoke-WebRequest -Uri $healthUrl `
+                              -UseBasicParsing `
+                              -TimeoutSec 3 `
+                              -ErrorAction Stop
+    return ($resp.StatusCode -eq 200)
+  } catch {
+    return $false
+  }
+}
+
+if (Test-ServerHealthy) {
+  Write-Host '[OK] Local Comet is already running.' -ForegroundColor Green
+  Write-Host ''
+  Write-Host '==========================================' -ForegroundColor Cyan
+  Write-Host '  Already running — no action taken.'      -ForegroundColor Green
+  Write-Host "  Open in browser: $appUrl"                -ForegroundColor Cyan
+  Write-Host '==========================================' -ForegroundColor Cyan
+  Write-Host ''
+  exit 0
+}
 
 # -- 1. Hard-kill anything on port $port ---------------------------------------
 function Kill-Port {
@@ -153,56 +178,17 @@ if (-not $ready) {
   exit 1
 }
 
-# -- 6. Open browser -- deterministic open sequence ---------------------------
-# Strategy:
-#   a) Wait a brief stabilization period after health OK so async server init
-#      (DB seed, Chromium probe, etc.) can finish before the browser fires.
-#   b) Open the plain root URL first so the browser definitely loads a fresh
-#      page from the server (no cached about:blank / stale tab).
-#   c) After the page has had time to load, navigate to the hash route so
-#      React Router initialises correctly.
-#   d) Cache-bust with a timestamp query param so even a cached entry is skipped.
-
-# Small stabilization window after first health OK -- avoids opening the browser
-# while the server is still completing async startup (DB seed, Chromium probe).
-Write-Host '  Waiting 2 s for server to stabilise...' -ForegroundColor DarkGray
-Start-Sleep -Seconds 2
-
-$cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-
-# Root URL (no hash yet) -- browser unconditionally requests a fresh page.
-$rootUrl   = "http://$host_addr`:$port/?v=$cacheBust"
-# Hash URL -- passed to the browser after the page has been fetched.
-$hashUrl   = "http://$host_addr`:$port/#/"
-
-Write-Host ''
-Write-Host "Opening: $hashUrl" -ForegroundColor Cyan
-
-# Prefer navigating via the shell URL handler so the OS picks the default
-# browser and opens a new tab with the correct URL from the start.
-# We pass the hash URL directly -- modern browsers open it as a fresh tab.
-try {
-  # Try to open via Start-Process with the default browser explicitly.
-  # Use the root URL for the initial fetch, then immediately replace with hash.
-  # Opening the root URL first forces a genuine HTTP request (no stale tab).
-  Start-Process $rootUrl
-
-  # Give the browser a moment to start the request, then open the hash URL.
-  # If the browser reuses the same tab (Chrome/Edge behaviour) it will
-  # navigate directly to /#/ which is what we want.
-  Start-Sleep -Seconds 2
-  Start-Process $hashUrl
-} catch {
-  # Fallback: open the combined URL if the above fails for any reason.
-  $fallbackUrl = "http://$host_addr`:$port/?v=$cacheBust#/"
-  Write-Host "  Fallback open: $fallbackUrl" -ForegroundColor DarkYellow
-  Start-Process $fallbackUrl
-}
+# -- 6. Print URL (no auto-open) -----------------------------------------------
+# We intentionally do NOT call Start-Process to open a browser tab.
+# Auto-opening can create a second window if the user already has the tab open,
+# and it opens before the server has fully initialized on slower machines.
+# Instruct the user to open the URL themselves.
 
 Write-Host ''
 Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host '  Local Comet is running!'                 -ForegroundColor Green
-Write-Host "  URL : http://$host_addr`:$port/#/"       -ForegroundColor Green
-Write-Host "  API : $healthUrl"                        -ForegroundColor DarkGray
+Write-Host "  Open in browser: $appUrl"                -ForegroundColor Cyan
+Write-Host "  API health    : $healthUrl"               -ForegroundColor DarkGray
+Write-Host '  (close the Server window to stop)'       -ForegroundColor DarkGray
 Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host ''

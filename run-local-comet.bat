@@ -21,6 +21,39 @@ if errorlevel 1 (
 for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
 echo [OK] Node.js found: %NODE_VER%
 
+:: ── Single-instance guard ──────────────────────────────────────────────────────
+:: First, try a real HTTP health check — most reliable way to confirm Local Comet
+:: (not just any process) is already running on port 5051.
+::
+:: PowerShell is used for the HTTP probe because cmd.exe has no built-in HTTP client.
+:: The probe is intentionally short-timeout (3 s) to keep the launch fast.
+set "HEALTH_URL=http://127.0.0.1:5051/api/health"
+set "APP_URL=http://127.0.0.1:5051/#/"
+
+for /f "delims=" %%s in ('powershell -NoProfile -NonInteractive -Command "try { $r = Invoke-WebRequest -Uri '%HEALTH_URL%' -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop; if ($r.StatusCode -eq 200) { 'HEALTHY' } else { 'DOWN' } } catch { 'DOWN' }" 2^>nul') do set "HEALTH_STATUS=%%s"
+
+if "!HEALTH_STATUS!"=="HEALTHY" (
+    echo.
+    echo [OK] Local Comet is already running on port 5051.
+    echo      Open in your browser: %APP_URL%
+    echo.
+    pause
+    exit /b 0
+)
+
+:: Belt-and-suspenders: if health check timed out but port is in use the server
+:: may still be booting — warn instead of spawning a second copy.
+netstat -ano | findstr ":5051 " >nul 2>&1
+if not errorlevel 1 (
+    echo.
+    echo [WARN] Port 5051 is in use but /api/health is not responding yet.
+    echo        Another instance may be starting. Wait a moment, then open:
+    echo        %APP_URL%
+    echo.
+    pause
+    exit /b 0
+)
+
 :: ── Install dependencies if node_modules is missing ───────────────────────────
 if not exist "node_modules\" (
     echo [INFO] Installing dependencies (first run only)...
@@ -66,15 +99,6 @@ if not exist "dist\index.cjs" (
         exit /b 1
     )
     echo [OK] Build complete.
-)
-
-:: ── Check if port 5051 is already in use ──────────────────────────────────────
-netstat -ano | findstr ":5051 " >nul 2>&1
-if not errorlevel 1 (
-    echo [WARN] Port 5051 is already in use. Another instance may be running.
-    echo        Open http://localhost:5051 in your browser to check.
-    pause
-    exit /b 0
 )
 
 :: ── Start the server ──────────────────────────────────────────────────────────

@@ -5,6 +5,8 @@
 
 .DESCRIPTION
     Starts Local Comet in production mode.
+    Single-instance guard: if port 5051 is already listening AND /api/health
+    returns HTTP 200 the script exits immediately — no second server is started.
     Works on Windows without any extra build tools — falls back to in-memory
     storage automatically if better-sqlite3 native binary is unavailable.
     Expects Ollama on http://127.0.0.1:11436 or LM Studio on http://192.168.31.168:1234.
@@ -42,6 +44,43 @@ try {
     Write-Host "[ERROR] Node.js not found. Install from https://nodejs.org (LTS recommended)" -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
+}
+
+# ── Single-instance guard ──────────────────────────────────────────────────────
+# Probe /api/health before doing anything else.
+# Using a direct HTTP check is more reliable than netstat — it confirms that
+# the *correct* service is already up and responding, not just that some process
+# is occupying the port.
+$healthUrl = 'http://127.0.0.1:5051/api/health'
+$appUrl    = 'http://127.0.0.1:5051/#/'
+
+$alreadyRunning = $false
+try {
+    $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+    if ($resp.StatusCode -eq 200) { $alreadyRunning = $true }
+} catch {}
+
+if ($alreadyRunning) {
+    Write-Host ""
+    Write-Host "[OK] Local Comet is already running on port 5051." -ForegroundColor Green
+    Write-Host "     Open in your browser: $appUrl"                -ForegroundColor Cyan
+    Write-Host ""
+    Read-Host "Press Enter to close this window"
+    exit 0
+}
+
+# ── Fallback: also check with netstat in case health endpoint takes time ───────
+# (belt-and-suspenders: prevents starting a second node process when the server
+#  is still booting and /api/health isn't responding yet)
+$portInUse = netstat -ano 2>&1 | Select-String ":5051 "
+if ($portInUse) {
+    Write-Host ""
+    Write-Host "[WARN] Port 5051 is in use but /api/health is not responding yet." -ForegroundColor Yellow
+    Write-Host "       Another instance may be starting. Wait a moment, then open:" -ForegroundColor Yellow
+    Write-Host "       $appUrl" -ForegroundColor Cyan
+    Write-Host ""
+    Read-Host "Press Enter to close this window"
+    exit 0
 }
 
 # ── Install dependencies if missing ───────────────────────────────────────────
@@ -92,15 +131,6 @@ if (-not (Test-Path "dist\index.cjs")) {
         exit 1
     }
     Write-Host "[OK] Build complete." -ForegroundColor Green
-}
-
-# ── Check if port 5051 is already in use ──────────────────────────────────────
-$portInUse = netstat -ano 2>&1 | Select-String ":5051 "
-if ($portInUse) {
-    Write-Host "[WARN] Port 5051 is already in use. Another instance may be running." -ForegroundColor Yellow
-    Write-Host "       Open http://localhost:5051 in your browser to check." -ForegroundColor Yellow
-    Read-Host "Press Enter to exit"
-    exit 0
 }
 
 # ── Start the server ──────────────────────────────────────────────────────────
