@@ -174,6 +174,16 @@ export async function registerRoutes(
     }
   });
 
+  // PATCH /api/settings — alias for browser-agent UI compatibility
+  app.patch("/api/settings", async (req, res) => {
+    try {
+      const saved = await storage.upsertSettings(req.body);
+      res.json(saved);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---- Provider: check ----
   app.post("/api/providers/check", async (req, res) => {
     try {
@@ -607,6 +617,25 @@ export async function registerRoutes(
     }
   });
 
+  // ---- Confirm: URL-param alias (POST /api/agent/confirm/:taskId) ----
+  // browser-agent.tsx calls this as POST /api/agent/confirm/:taskId { approved }
+  app.post("/api/agent/confirm/:taskId", (req, res) => {
+    try {
+      const taskId = parseInt(req.params.taskId);
+      const { approved } = req.body;
+      if (approved === undefined) {
+        return res.status(400).json({ error: "Требуется approved" });
+      }
+      const resolved = resolveConfirm(taskId, !!approved);
+      if (!resolved) {
+        return res.status(404).json({ error: "Нет ожидающего подтверждения для этой задачи" });
+      }
+      res.json({ ok: true, approved: !!approved });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---- Confirm: check status ----
   app.get("/api/agent/confirm/status", (_req, res) => {
     const pending = getPendingConfirm();
@@ -737,6 +766,83 @@ export async function registerRoutes(
   app.get("/api/element/selected", (req, res) => {
     const sessionId = (req.query.sessionId as string) || "default";
     res.json({ element: getSelectedElement(sessionId), sessionId });
+  });
+
+  // ---- Tasks: create new task (browser-agent UI) ----
+  // Accepts { title, targetUrl, goal, safetyMode } — URL is optional;
+  // when empty, resolveComputerQuery extracts it from the goal text.
+  app.post("/api/tasks", async (req, res) => {
+    try {
+      const { title, targetUrl, goal, safetyMode: reqSafetyMode } = req.body;
+      if (!goal || typeof goal !== "string") {
+        return res.status(400).json({ error: "Требуется goal" });
+      }
+
+      // Fast-fail: reject browser tasks when Chromium binary is missing
+      const chromiumReady = await probeChromiumAvailable();
+      if (!chromiumReady) {
+        return res.status(503).json({
+          ok: false,
+          error: "browser_unavailable",
+          message: "Браузер (Chromium) недоступен. Запустите npx playwright install chromium.",
+        });
+      }
+
+      const settings = await storage.getSettings();
+      const safetyMode = reqSafetyMode || settings?.safetyMode || "readonly";
+      const sid = `session-${Date.now()}`;
+      const wsId = (await storage.getActiveWorkspace())?.id || 1;
+
+      // Resolve URL: if targetUrl is provided use it, otherwise derive from goal text
+      let resolvedUrl = targetUrl && typeof targetUrl === "string" && targetUrl.trim().length > 0
+        ? targetUrl.trim()
+        : (() => {
+            const { url } = resolveComputerQuery(goal);
+            return url || `https://www.google.com/search?q=${encodeURIComponent(goal)}`;
+          })();
+
+      const task = await storage.createTask({
+        title: (title || goal).slice(0, 100),
+        targetUrl: resolvedUrl,
+        goal,
+        sessionId: sid,
+        workspaceId: wsId,
+      });
+
+      let providerConfig: any = null;
+      if (settings?.model) {
+        providerConfig = {
+          providerType: settings.providerType,
+          baseUrl: settings.baseUrl,
+          port: settings.port,
+          model: settings.model,
+          apiKey: settings.apiKey || "",
+          temperature: parseFloat(settings.temperature),
+          maxTokens: settings.maxTokens,
+        };
+      }
+
+      await enqueueTask(task, {
+        maxSteps: DEFAULT_MAX_STEPS,
+        providerConfig,
+        safetyMode,
+      });
+
+      res.json(task);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ---- Tasks: cancel a running task ----
+  app.post("/api/tasks/:id/cancel", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const cancelled = await cancelTask(id);
+      res.json({ ok: cancelled });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ---- Tasks history (workspace-aware) ----
@@ -1665,6 +1771,12 @@ function detectCodeLanguage(text: string): "python" | "javascript" | "typescript
 function isTemplateOnlyRequest(lower: string): boolean {
   // Patterns that generateCodeTemplate covers explicitly (RU + EN)
   const EXPLICIT_TEMPLATES = [
+    // ── HTML product templates (game / site / calculator) ─────────────────────
+    // These now have full playable/polished templates — skip LLM for them.
+    /игр[уаыею]|игру|игра|игры|\bgame\b|\bgames\b/,
+    /сайт|лендинг|\bwebsite\b|\blanding\b/,
+    /калькулятор|\bcalculator\b/,
+    // ── Algorithm / data patterns ─────────────────────────────────────────────
     /hello.?world|привет.?мир/,
     /fibonacci|фибоначчи/,
     /factorial|факториал/,
@@ -1696,6 +1808,481 @@ function generateCodeTemplate(query: string, lower: string, lang: "python" | "ja
     const isGame = /игр[уаыею]|игру|игра|игры|game/i.test(lower);
     const isSite = /сайт|лендинг|website|landing|page/i.test(lower);
     const isCalc = /калькулятор|calculator/i.test(lower);
+
+    // ── Game template: playable Snake / Brick-Breaker browser game ────────────
+    // Triggered by any request containing game / игра / игру / игры etc.
+    // Returns a fully self-contained, immediately playable HTML5 Canvas game.
+    if (isGame) {
+      // Detect sub-type for richer starters; default to Snake (universally understood)
+      const isBreaker = /breakout|brick|кирпич|арканоид|arkanoid/i.test(lower);
+      const isTetris = /tetris|тетрис/i.test(lower);
+      const isPong = /pong|понг/i.test(lower);
+
+      if (isPong) {
+        return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pong</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: monospace; color: #fff; }
+  canvas { border: 2px solid #fff; display: block; }
+  #info { margin-top: 12px; font-size: 14px; opacity: 0.7; }
+</style>
+</head>
+<body>
+<canvas id="c" width="640" height="400"></canvas>
+<div id="info">W/S — левая ракетка &nbsp;|&nbsp; ↑/↓ — правая ракетка</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const PAD = { w: 10, h: 70, speed: 5 };
+const BALL_SPEED = 4;
+
+let left = { x: 20, y: H/2 - PAD.h/2, score: 0, up: false, down: false };
+let right = { x: W - 30, y: H/2 - PAD.h/2, score: 0, up: false, down: false };
+let ball = { x: W/2, y: H/2, vx: BALL_SPEED, vy: BALL_SPEED };
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'w') left.up = true;
+  if (e.key === 's') left.down = true;
+  if (e.key === 'ArrowUp') { e.preventDefault(); right.up = true; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); right.down = true; }
+});
+document.addEventListener('keyup', e => {
+  if (e.key === 'w') left.up = false;
+  if (e.key === 's') left.down = false;
+  if (e.key === 'ArrowUp') right.up = false;
+  if (e.key === 'ArrowDown') right.down = false;
+});
+
+function movePad(p) {
+  if (p.up && p.y > 0) p.y -= PAD.speed;
+  if (p.down && p.y + PAD.h < H) p.y += PAD.speed;
+}
+
+function resetBall(dir) {
+  ball.x = W/2; ball.y = H/2;
+  ball.vx = BALL_SPEED * dir; ball.vy = BALL_SPEED * (Math.random() > 0.5 ? 1 : -1);
+}
+
+function update() {
+  movePad(left); movePad(right);
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.y <= 0 || ball.y >= H) ball.vy *= -1;
+  if (ball.x - 6 <= left.x + PAD.w && ball.y >= left.y && ball.y <= left.y + PAD.h) {
+    ball.vx = Math.abs(ball.vx) * 1.05; ball.x = left.x + PAD.w + 6;
+  }
+  if (ball.x + 6 >= right.x && ball.y >= right.y && ball.y <= right.y + PAD.h) {
+    ball.vx = -Math.abs(ball.vx) * 1.05; ball.x = right.x - 6;
+  }
+  if (ball.x < 0) { right.score++; resetBall(1); }
+  if (ball.x > W) { left.score++; resetBall(-1); }
+}
+
+function draw() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.setLineDash([10, 10]); ctx.strokeStyle = '#333';
+  ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(left.x, left.y, PAD.w, PAD.h);
+  ctx.fillRect(right.x, right.y, PAD.w, PAD.h);
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, 6, 0, Math.PI*2); ctx.fill();
+  ctx.font = '40px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(left.score, W/4, 50);
+  ctx.fillText(right.score, 3*W/4, 50);
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+<\/script>
+</body>
+</html>`;
+      }
+
+      if (isTetris) {
+        return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Тетрис</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; display: flex; align-items: center; justify-content: center; gap: 24px; height: 100vh; font-family: monospace; color: #fff; }
+  canvas { border: 1px solid #333; }
+  #ui { display: flex; flex-direction: column; gap: 12px; }
+  #ui p { font-size: 13px; opacity: 0.6; }
+  #score { font-size: 28px; font-weight: bold; }
+  #keys { font-size: 12px; opacity: 0.5; line-height: 1.8; }
+</style>
+</head>
+<body>
+<canvas id="c" width="240" height="480"></canvas>
+<div id="ui">
+  <div id="score">0</div>
+  <p>Очки</p>
+  <div id="keys">← → — движение<br>↑ — поворот<br>↓ — быстрее<br>Пробел — сброс</div>
+</div>
+<script>
+const C = document.getElementById('c'), ctx = C.getContext('2d');
+const COLS = 10, ROWS = 20, SZ = 24;
+const COLORS = ['', '#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6'];
+const SHAPES = [
+  [[1,1,1,1]],
+  [[2,2],[2,2]],
+  [[0,3,0],[3,3,3]],
+  [[4,4,0],[0,4,4]],
+  [[0,5,5],[5,5,0]],
+  [[6,0,0],[6,6,6]],
+  [[0,0,7],[7,7,7]]
+];
+let board = Array.from({length: ROWS}, () => new Array(COLS).fill(0));
+let piece, px, py, score = 0, gameOver = false, interval;
+
+function newPiece() {
+  piece = SHAPES[Math.random()*SHAPES.length|0];
+  px = (COLS - piece[0].length) >> 1; py = 0;
+  if (collide()) { gameOver = true; clearInterval(interval); }
+}
+
+function collide(ox=0, oy=0, p=piece) {
+  for (let r=0; r<p.length; r++) for (let c=0; c<p[r].length; c++)
+    if (p[r][c] && (py+r+oy >= ROWS || px+c+ox < 0 || px+c+ox >= COLS || board[py+r+oy]?.[px+c+ox]))
+      return true;
+  return false;
+}
+
+function merge() {
+  piece.forEach((r,ri) => r.forEach((v,ci) => { if(v) board[py+ri][px+ci]=v; }));
+  let cleared = 0;
+  board = board.filter(r => { const full = r.every(v=>v); if(full) cleared++; return !full; });
+  while (cleared--) board.unshift(new Array(COLS).fill(0));
+  score += cleared * 100;
+  document.getElementById('score').textContent = score;
+  newPiece();
+}
+
+function rotate(p) { return p[0].map((_,i) => p.map(r=>r[i]).reverse()); }
+
+function drop() { if (!collide(0,1)) py++; else merge(); }
+
+document.addEventListener('keydown', e => {
+  if (gameOver) return;
+  if (e.key==='ArrowLeft') { if(!collide(-1)) px--; }
+  else if (e.key==='ArrowRight') { if(!collide(1)) px++; }
+  else if (e.key==='ArrowDown') drop();
+  else if (e.key==='ArrowUp') { const r=rotate(piece); if(!collide(0,0,r)) piece=r; }
+  else if (e.key===' ') { while(!collide(0,1)) py++; merge(); }
+  draw();
+});
+
+function draw() {
+  ctx.fillStyle='#0d0d0d'; ctx.fillRect(0,0,C.width,C.height);
+  board.forEach((r,ri) => r.forEach((v,ci) => {
+    if (v) { ctx.fillStyle=COLORS[v]; ctx.fillRect(ci*SZ+1,ri*SZ+1,SZ-2,SZ-2); }
+  }));
+  piece.forEach((r,ri) => r.forEach((v,ci) => {
+    if (v) { ctx.fillStyle=COLORS[v]; ctx.fillRect((px+ci)*SZ+1,(py+ri)*SZ+1,SZ-2,SZ-2); }
+  }));
+  if (gameOver) {
+    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,C.width,C.height);
+    ctx.fillStyle='#fff'; ctx.font='20px monospace'; ctx.textAlign='center';
+    ctx.fillText('GAME OVER', C.width/2, C.height/2-10);
+    ctx.fillText('Очки: '+score, C.width/2, C.height/2+20);
+  }
+}
+
+newPiece();
+interval = setInterval(() => { drop(); draw(); }, 500);
+<\/script>
+</body>
+</html>`;
+      }
+
+      if (isBreaker) {
+        return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Арканоид</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; color: #fff; }
+  canvas { border: 1px solid #333; cursor: none; }
+  #info { margin-top: 10px; font-size: 14px; opacity: 0.6; }
+</style>
+</head>
+<body>
+<canvas id="c" width="480" height="520"></canvas>
+<div id="info">Двигайте мышь или ← →. Пробел — старт.</div>
+<script>
+const C = document.getElementById('c'), ctx = C.getContext('2d');
+const W = 480, H = 520;
+const PAD_W = 80, PAD_H = 12, BALL_R = 7;
+let pad = {x: W/2 - PAD_W/2, y: H - 30};
+let ball = {x: W/2, y: H - 50, vx: 3, vy: -3, live: false};
+let lives = 3, score = 0;
+const COLS = 8, ROWS = 5;
+const brickW = (W - 20) / COLS - 4, brickH = 18;
+let bricks = [];
+
+function initBricks() {
+  bricks = [];
+  const hues = [0,30,60,120,180,200,270,300];
+  for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++)
+    bricks.push({x: 10 + c*(brickW+4), y: 50 + r*(brickH+5), alive: true, color: 'hsl('+hues[c]+',70%,55%)'});
+}
+
+C.addEventListener('mousemove', e => {
+  const rect = C.getBoundingClientRect();
+  pad.x = Math.max(0, Math.min(W - PAD_W, e.clientX - rect.left - PAD_W/2));
+});
+document.addEventListener('keydown', e => {
+  if (e.key === ' ') ball.live = true;
+  if (e.key === 'ArrowLeft') pad.x = Math.max(0, pad.x - 20);
+  if (e.key === 'ArrowRight') pad.x = Math.min(W - PAD_W, pad.x + 20);
+});
+
+function update() {
+  if (!ball.live) { ball.x = pad.x + PAD_W/2; return; }
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.x <= BALL_R || ball.x >= W - BALL_R) ball.vx *= -1;
+  if (ball.y <= BALL_R) ball.vy *= -1;
+  if (ball.y + BALL_R >= pad.y && ball.x >= pad.x && ball.x <= pad.x + PAD_W) {
+    ball.vy = -Math.abs(ball.vy);
+    ball.vx = (ball.x - (pad.x + PAD_W/2)) / (PAD_W/2) * 4;
+  }
+  bricks.forEach(b => {
+    if (!b.alive) return;
+    if (ball.x+BALL_R > b.x && ball.x-BALL_R < b.x+brickW && ball.y+BALL_R > b.y && ball.y-BALL_R < b.y+brickH) {
+      b.alive = false; ball.vy *= -1; score += 10;
+    }
+  });
+  if (ball.y > H) { lives--; ball.live = false; ball.x = pad.x + PAD_W/2; ball.y = pad.y - 20; }
+}
+
+function draw() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0,0,W,H);
+  bricks.forEach(b => { if(b.alive) { ctx.fillStyle=b.color; ctx.fillRect(b.x,b.y,brickW,brickH); } });
+  ctx.fillStyle = '#4ade80'; ctx.fillRect(pad.x, pad.y, PAD_W, PAD_H);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='14px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('Очки: '+score, 10, 22);
+  ctx.textAlign='right'; ctx.fillText('Жизни: '+lives, W-10, 22);
+  if (lives <= 0) {
+    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#fff'; ctx.font='28px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Игра окончена', W/2, H/2 - 20);
+    ctx.font='18px sans-serif'; ctx.fillText('Очки: '+score, W/2, H/2+20);
+  }
+  if (bricks.every(b => !b.alive)) {
+    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#4ade80'; ctx.font='28px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Победа!', W/2, H/2 - 20);
+    ctx.font='18px sans-serif'; ctx.fillStyle='#fff'; ctx.fillText('Очки: '+score, W/2, H/2+20);
+  }
+}
+
+function loop() { if (lives > 0 && bricks.some(b=>b.alive)) { update(); draw(); requestAnimationFrame(loop); } }
+initBricks(); loop();
+<\/script>
+</body>
+</html>`;
+      }
+
+      // Default game: Snake (playable, universally understood)
+      return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Змейка</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0a; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: monospace; color: #fff; gap: 12px; }
+  canvas { border: 1px solid #2d2d2d; image-rendering: pixelated; }
+  #hud { display: flex; gap: 32px; font-size: 14px; }
+  #hud span { color: #4ade80; font-weight: bold; }
+  #msg { font-size: 13px; opacity: 0.5; }
+</style>
+</head>
+<body>
+<div id="hud">Очки: <span id="score">0</span>&nbsp; Рекорд: <span id="best">0</span></div>
+<canvas id="c" width="400" height="400"></canvas>
+<div id="msg">Стрелки / WASD — управление &nbsp;|&nbsp; Enter — рестарт</div>
+<script>
+const CELL = 20, COLS = 20, ROWS = 20;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let snake, dir, nextDir, food, score, best = 0, alive, raf;
+
+function rand(max) { return Math.floor(Math.random() * max); }
+
+function placeFood() {
+  const free = [];
+  const occupied = new Set(snake.map(s => s.x + ',' + s.y));
+  for (let x = 0; x < COLS; x++) for (let y = 0; y < ROWS; y++)
+    if (!occupied.has(x+','+y)) free.push({x,y});
+  food = free[rand(free.length)] || {x: 0, y: 0};
+}
+
+function init() {
+  snake = [{x: 10, y: 10}, {x: 9, y: 10}, {x: 8, y: 10}];
+  dir = {x: 1, y: 0}; nextDir = {x: 1, y: 0};
+  score = 0; alive = true;
+  placeFood();
+  document.getElementById('score').textContent = '0';
+}
+
+document.addEventListener('keydown', e => {
+  const map = {
+    ArrowUp: {x:0,y:-1}, ArrowDown: {x:0,y:1},
+    ArrowLeft: {x:-1,y:0}, ArrowRight: {x:1,y:0},
+    w:{x:0,y:-1}, s:{x:0,y:1}, a:{x:-1,y:0}, d:{x:1,y:0},
+    W:{x:0,y:-1}, S:{x:0,y:1}, A:{x:-1,y:0}, D:{x:1,y:0}
+  };
+  if (e.key === 'Enter') { cancelAnimationFrame(raf); init(); loop(); return; }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+  const d = map[e.key];
+  if (d && !(d.x === -dir.x && d.y === -dir.y)) nextDir = d;
+});
+
+let last = 0;
+const SPEED = 120;
+
+function update(ts) {
+  if (ts - last < SPEED) return;
+  last = ts; dir = nextDir;
+  const head = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
+  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS ||
+      snake.some(s => s.x === head.x && s.y === head.y)) {
+    alive = false; return;
+  }
+  snake.unshift(head);
+  if (head.x === food.x && head.y === food.y) {
+    score++; if (score > best) best = score;
+    document.getElementById('score').textContent = score;
+    document.getElementById('best').textContent = best;
+    placeFood();
+  } else {
+    snake.pop();
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, 400, 400);
+  ctx.fillStyle = '#ef4444';
+  ctx.beginPath(); ctx.arc(food.x*CELL+CELL/2, food.y*CELL+CELL/2, CELL/2-2, 0, Math.PI*2); ctx.fill();
+  snake.forEach((s, i) => {
+    const t = 1 - i / snake.length;
+    const lightness = Math.round(35 + t*25);
+    ctx.fillStyle = 'hsl(142, 70%, ' + lightness + '%)';
+    ctx.fillRect(s.x*CELL+1, s.y*CELL+1, CELL-2, CELL-2);
+  });
+  if (!alive) {
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0,0,400,400);
+    ctx.fillStyle = '#fff'; ctx.font = '22px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Игра окончена', 200, 185);
+    ctx.font = '14px monospace';
+    ctx.fillText('Очки: ' + score + '  |  Enter — рестарт', 200, 215);
+  }
+}
+
+function loop(ts) {
+  ts = ts || 0;
+  if (alive) update(ts);
+  draw();
+  raf = requestAnimationFrame(loop);
+}
+
+init(); loop();
+<\/script>
+</body>
+</html>`;
+    }
+
+    // ── Site / Landing page template ──────────────────────────────────────────
+    if (isSite) {
+      const pageTitle = query.replace(/сайт|лендинг|website|landing|page|сделай|напиши|создай|make|build|write|create/gi, "").trim().slice(0, 60) || "Мой сайт";
+      return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${pageTitle}</title>
+<style>
+  :root { --accent: #6366f1; --bg: #0f172a; --surface: #1e293b; --text: #f1f5f9; --muted: #94a3b8; --border: #334155; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; }
+  nav { position: sticky; top: 0; background: rgba(15,23,42,0.9); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; align-items: center; gap: 32px; height: 60px; z-index: 100; }
+  nav .logo { font-weight: 700; font-size: 18px; color: var(--text); }
+  nav .links { display: flex; gap: 24px; margin-left: auto; }
+  nav .links a { color: var(--muted); font-size: 14px; transition: color .2s; }
+  nav .links a:hover { color: var(--text); }
+  nav .cta { background: var(--accent); color: #fff; padding: 8px 18px; border-radius: 8px; font-size: 14px; font-weight: 500; }
+  .hero { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; min-height: calc(100vh - 60px); padding: 80px 24px; }
+  .hero-badge { background: rgba(99,102,241,0.15); color: var(--accent); border: 1px solid rgba(99,102,241,0.4); padding: 6px 16px; border-radius: 100px; font-size: 13px; font-weight: 500; margin-bottom: 24px; display: inline-block; }
+  .hero h1 { font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 800; letter-spacing: -0.03em; max-width: 800px; margin-bottom: 20px; }
+  .hero h1 span { background: linear-gradient(135deg, #6366f1, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .hero p { font-size: 1.15rem; color: var(--muted); max-width: 560px; margin-bottom: 36px; }
+  .btn-group { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .btn-primary { background: var(--accent); color: #fff; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 15px; transition: opacity .2s; }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); padding: 12px 28px; border-radius: 10px; font-size: 15px; transition: background .2s; }
+  .btn-ghost:hover { background: var(--surface); }
+  .features { padding: 80px 24px; max-width: 1100px; margin: 0 auto; }
+  .features h2 { text-align: center; font-size: 2rem; font-weight: 700; margin-bottom: 48px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px; transition: border-color .2s; }
+  .card:hover { border-color: var(--accent); }
+  .card .icon { font-size: 32px; margin-bottom: 12px; }
+  .card h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 14px; }
+  footer { text-align: center; padding: 40px 24px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">${pageTitle}</div>
+  <div class="links">
+    <a href="#features">Функции</a>
+    <a href="#about">О нас</a>
+    <a href="#contact">Контакты</a>
+    <a class="cta" href="#">Начать бесплатно</a>
+  </div>
+</nav>
+<section class="hero">
+  <span class="hero-badge">Новый уровень</span>
+  <h1>Добро пожаловать в <span>${pageTitle}</span></h1>
+  <p>Современный сайт, созданный с нуля. Быстрый, красивый и готовый к работе — прямо из Local Comet IDE.</p>
+  <div class="btn-group">
+    <a class="btn-primary" href="#features">Узнать больше</a>
+    <a class="btn-ghost" href="#contact">Связаться</a>
+  </div>
+</section>
+<section class="features" id="features">
+  <h2>Возможности</h2>
+  <div class="grid">
+    <div class="card"><div class="icon">&#x26A1;</div><h3>Быстро</h3><p>Оптимизированная производительность для максимальной скорости загрузки.</p></div>
+    <div class="card"><div class="icon">&#x1F3A8;</div><h3>Красиво</h3><p>Современный дизайн с тёмной темой и плавными переходами.</p></div>
+    <div class="card"><div class="icon">&#x1F4F1;</div><h3>Адаптивно</h3><p>Корректно отображается на любых устройствах — от смартфонов до мониторов.</p></div>
+    <div class="card"><div class="icon">&#x1F512;</div><h3>Надёжно</h3><p>Защита данных и безопасная работа по современным стандартам.</p></div>
+    <div class="card"><div class="icon">&#x1F680;</div><h3>Масштабируемо</h3><p>Готово к росту — легко расширяется по мере развития проекта.</p></div>
+    <div class="card"><div class="icon">&#x1F6E0;</div><h3>Настраиваемо</h3><p>Полная свобода кастомизации под любые требования и стиль.</p></div>
+  </div>
+</section>
+<footer>&copy; ${new Date().getFullYear()} ${pageTitle}. Создано с помощью Local Comet IDE.</footer>
+</body>
+</html>`;
+    }
+
     if (isCalc) {
       return `<!DOCTYPE html>
 <html lang="ru">
@@ -2154,8 +2741,21 @@ function resolveComputerQuery(query: string): { url: string; goal: string } {
           const url = engTpl.replace("{q}", encodeURIComponent(m[2].trim()));
           return { url, goal: `Найти: ${m[2].trim()}` };
         }
+        // Also try KNOWN_SITES for pattern like "find top posts on hacker news"
+        const knownUrl = KNOWN_SITES[engName];
+        if (knownUrl) {
+          return { url: knownUrl, goal: raw };
+        }
       }
+      // Before falling back to Google: check if the search term contains a known site name
       const q = (m[1] || m[2] || "").trim();
+      const qLower = q.toLowerCase();
+      for (const [name, siteUrl] of Object.entries(KNOWN_SITES)) {
+        if (qLower.includes(` on ${name}`) || qLower.endsWith(` ${name}`) || qLower.startsWith(`${name} `)) {
+          // e.g. "top headlines on hacker news" -> go to hacker news with goal preserved
+          return { url: siteUrl, goal: raw };
+        }
+      }
       const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
       return { url, goal: `Поиск в Google: ${q}` };
     }

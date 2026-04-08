@@ -108,12 +108,23 @@ export async function executeTerminalCommand(
   }
 
   const start = Date.now();
+
+  // On Windows, force UTF-8 output to avoid garbled Cyrillic / non-ASCII chars.
+  // cmd.exe defaults to the system code page (e.g. cp1251 on Russian Windows),
+  // which produces mojibake in the output panel.  `chcp 65001` switches the
+  // active code page to UTF-8 for the duration of the spawned process.
+  const cmdWithEncoding = IS_WINDOWS
+    ? `chcp 65001 > nul 2>&1 && ${command}`
+    : command;
+
   try {
-    const { stdout, stderr } = await execAsync(command, {
+    const { stdout, stderr } = await execAsync(cmdWithEncoding, {
       cwd,
       timeout,
       maxBuffer: 512 * 1024, // 512KB output cap
       shell: getPlatformShell(),
+      // Node.js child_process: request UTF-8 from the OS buffer layer
+      encoding: "utf8",
     });
     return {
       stdout: stdout.slice(0, 8000),
@@ -239,11 +250,19 @@ export async function runCodeSandbox(
         return { output: "", error: `Неподдерживаемый язык: ${language}`, exitCode: 1, durationMs: 0, language };
     }
 
-    const { stdout, stderr } = await execAsync(command, {
+    // On Windows, prepend `chcp 65001` to ensure UTF-8 output from cmd.exe.
+    // This prevents Cyrillic/non-ASCII characters from appearing as mojibake
+    // in the Code Studio output panel.
+    const execCommand = IS_WINDOWS
+      ? `chcp 65001 > nul 2>&1 && ${command}`
+      : command;
+
+    const { stdout, stderr } = await execAsync(execCommand, {
       cwd,
       timeout,
       maxBuffer: 256 * 1024,
       shell: getPlatformShell(),
+      encoding: "utf8",
     });
 
     const artifacts = listSandboxFiles_internal(cwd);
