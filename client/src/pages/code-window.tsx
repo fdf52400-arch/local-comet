@@ -731,6 +731,18 @@ export default function CodeWindowPage() {
     promptRef.current?.focus();
   }, []);
 
+  // Sync userQuery from native input events (e.g. programmatic form_input via automation)
+  // React's synthetic onChange may miss natively dispatched input events on controlled inputs
+  useEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    const handler = () => {
+      setUserQuery(el.value);
+    };
+    el.addEventListener("input", handler);
+    return () => el.removeEventListener("input", handler);
+  }, []);
+
   // Auto-trigger generation if query was passed via URL
   useEffect(() => {
     if (initialQuery.trim()) {
@@ -862,14 +874,14 @@ export default function CodeWindowPage() {
       setDebugDrawerOpen(true);
 
       try {
-        const res = await apiRequest("POST", "/api/computer/sandbox", {
+        const res = await apiRequest("POST", "/api/sandbox/run", {
           code: src,
           language: langToUse === "typescript" ? "javascript" : langToUse,
           sessionId,
         });
         const data = await res.json();
 
-        if (!res.ok || !data.ok) {
+        if (!res.ok) {
           setPhase("done");
           const r: RunResult = {
             output: "",
@@ -1093,8 +1105,8 @@ export default function CodeWindowPage() {
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground"
-      style={{ height: "100dvh", overflow: "hidden" }}
+      className="flex flex-col bg-background text-foreground h-full"
+      style={{ overflow: "hidden" }}
       data-testid="code-window-page"
     >
       {/* ── Top bar ──────────────────────────────────────────────────────────── */}
@@ -1130,12 +1142,12 @@ export default function CodeWindowPage() {
             </button>
           </Link>
           {/* Settings shortcut */}
-          <Link href="/settings">
+          <Link href="/providers">
             <button
               className="shrink-0 text-[11px] px-2.5 py-1 rounded font-mono transition-colors text-muted-foreground hover:text-foreground hover:bg-muted/30"
               data-testid="tab-settings-top"
             >
-              ⚙ Настройки
+              ⚙ Providers
             </button>
           </Link>
         </div>
@@ -1321,7 +1333,7 @@ export default function CodeWindowPage() {
           data-testid="editor-pane"
         >
           {/* Editor with optional debug drawer */}
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0" style={{ position: "relative", overflow: "hidden" }}>
             <MonacoEditorWrapper
               value={code}
               onChange={setCode}

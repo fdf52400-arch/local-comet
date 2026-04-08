@@ -25,7 +25,7 @@ import {
   Shield, ShieldAlert, ShieldCheck,
   RefreshCw, Send, X, RotateCcw, Info,
   AlertOctagon, Scan, Brain, Cpu,
-  ChevronRight, Square, Activity,
+  ChevronRight, ChevronDown, Square, Activity, Link,
 } from "lucide-react";
 import type { AgentTask } from "@shared/schema";
 import { isHostedPreview } from "@/lib/hosting-env";
@@ -91,9 +91,9 @@ const SAFETY_MODES = {
 };
 
 const DEMO_TASKS = [
+  { url: "", goal: "Find the top 5 AI news stories today" },
+  { url: "", goal: "List the top 5 headlines on Hacker News with links" },
   { url: "https://ru.wikipedia.org/wiki/Искусственный_интеллект", goal: "Summarise the page content into key sections" },
-  { url: "https://news.ycombinator.com", goal: "List the top 5 headlines with links" },
-  { url: "https://httpbin.org", goal: "Explore the page structure and list available endpoints" },
 ];
 
 // ─── Confirm dialog ───────────────────────────────────────────────────────────
@@ -194,7 +194,9 @@ export default function BrowserAgentPage() {
   // Form state
   const [url, setUrl] = useState("");
   const [goal, setGoal] = useState("");
+  const goalRef = useRef<HTMLTextAreaElement>(null);
   const [safetyMode, setSafetyMode] = useState<"readonly" | "confirm" | "full">("readonly");
+  const [showUrlField, setShowUrlField] = useState(false);
 
   // Live state
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -228,6 +230,15 @@ export default function BrowserAgentPage() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events]);
+
+  // Sync goal from native input events (handles programmatic form_input via automation)
+  useEffect(() => {
+    const el = goalRef.current;
+    if (!el) return;
+    const handler = () => setGoal(el.value);
+    el.addEventListener("input", handler);
+    return () => el.removeEventListener("input", handler);
+  }, []);
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
@@ -283,7 +294,8 @@ export default function BrowserAgentPage() {
   // ── Derived state ──────────────────────────────────────────────────────────
 
   const isRunning = activeTask?.status === "running" || activeTask?.status === "queued" || activeTask?.status === "waiting_confirm";
-  const canRun = url.trim().length > 0 && goal.trim().length > 0 && !isRunning;
+  // URL is optional — when empty the server derives it from the goal text
+  const canRun = goal.trim().length > 0 && !isRunning;
   const chromiumOk = statusQuery.data?.chromiumAvailable !== false;
   const currentSafety: keyof typeof SAFETY_MODES = (settingsQuery.data?.safetyMode as any) || safetyMode;
   const SafetyIcon = SAFETY_MODES[currentSafety]?.icon || Shield;
@@ -300,6 +312,8 @@ export default function BrowserAgentPage() {
   const handleDemo = (demo: typeof DEMO_TASKS[0]) => {
     setUrl(demo.url);
     setGoal(demo.goal);
+    // Reveal URL field if the demo task has a URL
+    if (demo.url) setShowUrlField(true);
   };
 
   const filteredEvents = activeTaskId
@@ -358,29 +372,46 @@ export default function BrowserAgentPage() {
         <div className="w-72 flex-shrink-0 flex flex-col border-r border-border overflow-y-auto">
           <div className="p-4 flex flex-col gap-4">
 
-            {/* URL input */}
+            {/* Goal input — PRIMARY */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Target URL</label>
-              <Input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com"
-                className="text-sm font-mono"
-                data-testid="input-url"
+              <label className="text-xs font-semibold text-foreground uppercase tracking-wider">Task</label>
+              <Textarea
+                ref={goalRef}
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+                placeholder={"Describe what the agent should do.\nExamples:\n• Find the top 5 AI news stories today\n• Summarise the Wikipedia page about AI\n• Search Google for open-source LLMs"}
+                className="text-sm resize-none"
+                rows={6}
+                data-testid="input-goal"
+                autoFocus
               />
             </div>
 
-            {/* Goal input */}
+            {/* URL — SECONDARY / collapsible */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Goal</label>
-              <Textarea
-                value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                placeholder="What should the agent do on this page?"
-                className="text-sm resize-none"
-                rows={4}
-                data-testid="input-goal"
-              />
+              <button
+                type="button"
+                onClick={() => setShowUrlField((v) => !v)}
+                className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors w-fit"
+                data-testid="toggle-url-field"
+              >
+                {showUrlField
+                  ? <ChevronDown className="h-3 w-3" />
+                  : <ChevronRight className="h-3 w-3" />
+                }
+                <Link className="h-3 w-3" />
+                <span>Target URL</span>
+                <span className="text-muted-foreground/50">(optional)</span>
+              </button>
+              {showUrlField && (
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  className="text-sm font-mono"
+                  data-testid="input-url"
+                />
+              )}
             </div>
 
             {/* Safety mode description */}
@@ -428,11 +459,13 @@ export default function BrowserAgentPage() {
                   className="text-left px-2.5 py-2 rounded-lg bg-muted/40 hover:bg-muted/70 transition-colors group"
                   data-testid={`demo-task-${i}`}
                 >
-                  <div className="text-xs text-muted-foreground font-mono truncate">{demo.url}</div>
-                  <div className="text-xs text-foreground mt-0.5 flex items-center gap-1">
-                    <ChevronRight className="h-3 w-3 text-primary group-hover:translate-x-0.5 transition-transform" />
-                    {demo.goal}
+                  <div className="text-xs text-foreground flex items-start gap-1">
+                    <ChevronRight className="h-3 w-3 text-primary group-hover:translate-x-0.5 transition-transform mt-0.5 flex-shrink-0" />
+                    <span>{demo.goal}</span>
                   </div>
+                  {demo.url && (
+                    <div className="text-[11px] text-muted-foreground font-mono truncate mt-0.5 pl-4">{demo.url}</div>
+                  )}
                 </button>
               ))}
             </div>
@@ -501,7 +534,7 @@ export default function BrowserAgentPage() {
                     <div className="text-center py-12">
                       <Globe className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
                       <p className="text-sm text-muted-foreground">No events yet.</p>
-                      <p className="text-xs text-muted-foreground/60 mt-1">Enter a URL and goal, then hit Run.</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">Describe the task in the Goal field and hit Run. URL is optional.</p>
                     </div>
                   )}
                   {filteredEvents.map((ev, i) => (

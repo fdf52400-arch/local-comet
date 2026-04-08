@@ -166,7 +166,7 @@ export default function MonacoEditorWrapper({
   }, [monacoTheme]);
 
   return (
-    <div className="relative h-full w-full" data-testid={testId}>
+    <div className="relative w-full" style={{ height: "100%", minHeight: "200px" }} data-testid={testId}>
       {/* Placeholder overlay — visible only when value is empty */}
       {!value && placeholder && (
         <div
