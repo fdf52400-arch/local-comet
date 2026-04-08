@@ -24,7 +24,7 @@
     powershell -ExecutionPolicy Bypass -File bootstrap-local-comet.ps1 -ForceFresh
 
 .NOTES
-  Does NOT open the browser automatically — prints the URL for the user.
+  Does NOT open the browser automatically -- prints the URL for the user.
 #>
 param(
   [switch]$ForceFresh
@@ -46,9 +46,9 @@ $healthPoll    = 2           # seconds between health probes
 Write-Host ''
 Write-Host '==========================================' -ForegroundColor Cyan
 if ($ForceFresh) {
-  Write-Host '  Local Comet  —  FORCE-FRESH bootstrap'  -ForegroundColor Magenta
+  Write-Host '  Local Comet  --  FORCE-FRESH bootstrap'  -ForegroundColor Magenta
 } else {
-  Write-Host '  Local Comet  —  bootstrap'               -ForegroundColor Cyan
+  Write-Host '  Local Comet  --  bootstrap'               -ForegroundColor Cyan
 }
 Write-Host '==========================================' -ForegroundColor Cyan
 Write-Host ''
@@ -71,7 +71,7 @@ if (-not $ForceFresh) {
     Write-Host '[OK] Local Comet is already running.' -ForegroundColor Green
     Write-Host ''
     Write-Host '==========================================' -ForegroundColor Cyan
-    Write-Host '  Already running — no action taken.'      -ForegroundColor Green
+    Write-Host '  Already running -- no action taken.'      -ForegroundColor Green
     Write-Host "  Open in browser: $appUrl"                -ForegroundColor Cyan
     Write-Host '  (Use -ForceFresh to wipe and reclone.)'  -ForegroundColor DarkGray
     Write-Host '==========================================' -ForegroundColor Cyan
@@ -112,7 +112,7 @@ function Kill-Port {
       Write-Host "    Port $p is free." -ForegroundColor Green
     }
   } catch {
-    Write-Host "    (Could not check port $p — continuing)" -ForegroundColor DarkGray
+    Write-Host "    (Could not check port $p -- continuing)" -ForegroundColor DarkGray
   }
 }
 
@@ -124,7 +124,7 @@ Set-Location $env:USERPROFILE
 
 if ($ForceFresh) {
   # ---- FORCE-FRESH: delete everything, clone clean ----------------------------
-  Write-Host '[2] FORCE-FRESH — deleting local copy...' -ForegroundColor Magenta
+  Write-Host '[2] FORCE-FRESH -- deleting local copy...' -ForegroundColor Magenta
   if (Test-Path $repoPath) {
     Write-Host "    Removing $repoPath (this may take a moment for node_modules)..." -ForegroundColor DarkYellow
     # Remove-Item -Recurse -Force can be slow or fail on deep node_modules trees.
@@ -230,7 +230,7 @@ if (-not $ready) {
 Write-Host ''
 Write-Host '==========================================' -ForegroundColor Cyan
 if ($ForceFresh) {
-  Write-Host '  Force-fresh complete — Local Comet is running!' -ForegroundColor Magenta
+  Write-Host '  Force-fresh complete -- Local Comet is running!' -ForegroundColor Magenta
 } else {
   Write-Host '  Local Comet is running!'                        -ForegroundColor Green
 }
