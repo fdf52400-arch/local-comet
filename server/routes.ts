@@ -1088,73 +1088,102 @@ export async function registerRoutes(
 
       const lower = query.toLowerCase();
       let code: string | null = null;
-      let generationSource = "template";
+      let generationSource: "llm" | "template" | "no_model" | "llm_timeout" | "llm_error" = "template";
 
-      // ── Fast deterministic path — skip LLM for template-matched queries ──────
-      // isTemplateOnlyRequest() returns true when generateCodeTemplate() will
-      // produce a high-quality result, so there is no reason to wait for an LLM.
-      if (!isTemplateOnlyRequest(lower)) {
-        // ── Try LLM generation with a hard 8-second timeout ────────────────────
-        try {
-          const settings = await storage.getSettings();
-          if (settings?.model && settings.model.trim().length > 0) {
-            const providerConfig = {
-              providerType: settings.providerType,
-              baseUrl: settings.baseUrl,
-              port: settings.port,
-              model: settings.model,
-              apiKey: settings.apiKey || "",
-              temperature: parseFloat(settings.temperature) || 0.2,
-              maxTokens: Math.min(settings.maxTokens || 1024, 2048),
-            };
-            const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : lang === "html" ? "HTML" : lang === "css" ? "CSS" : "Python";
-            const isWebLangInner = lang === "html" || lang === "css";
-            const systemPrompt = isWebLangInner
-              ? `You are an expert ${langName} developer. Write ONLY complete, working ${langName} code — no markdown fences, no explanations. For HTML include full page structure with <!DOCTYPE html>. Output raw code only.`
-              : `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
-            const userMsg = isWebLangInner
-              ? `Write complete, working ${langName} for: ${query}\n\nRequirements:\n- Self-contained (all CSS/JS inline for HTML)\n- Visually polished\n- Output raw ${langName} only, no markdown`
-              : `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
+      // ── Check if this query has a deterministic template match ───────────────
+      const isTemplateMatch = isTemplateOnlyRequest(lower);
 
-            // Hard timeout: if LLM doesn't respond within 8 s, fall through to template.
-            const LLM_TIMEOUT_MS = 8_000;
-            const llmResult = await Promise.race([
-              chat(providerConfig as any, [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userMsg },
-              ]),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("llm_timeout")), LLM_TIMEOUT_MS)
-              ),
-            ]);
-
-            const raw = (llmResult as { content: string }).content.trim();
-            // Strip markdown code fences if LLM included them anyway
-            const stripped = raw
-              .replace(/^```[\w]*\n?/m, "")
-              .replace(/\n?```$/m, "")
-              .trim();
-            if (stripped.length > 5) {
-              code = stripped;
-              generationSource = "llm";
-            }
-          }
-        } catch (_llmErr) {
-          // LLM unavailable, timed out, or failed — fall through to template
-        }
-      }
-
-      // ── Template fallback (also fast path for template-detectable queries) ───
-      if (!code) {
+      if (isTemplateMatch) {
+        // Fast deterministic path — this query maps to a known high-quality template.
+        // Always serve the template for these, clearly labelled.
         code = generateCodeTemplate(query, lower, lang);
         generationSource = "template";
+      } else {
+        // ── This query requires LLM generation ──────────────────────────────────
+        // Do NOT fall back to an unrelated template if LLM is unavailable.
+        // Return a model_not_ready error instead of fake output.
+        const settings = await storage.getSettings();
+        const modelConfigured = !!(settings?.model && settings.model.trim().length > 0);
+
+        if (!modelConfigured) {
+          // No model configured — honest blocked state, no fake template
+          return res.status(503).json({
+            ok: false,
+            error: "Модель не настроена. Перейдите в Providers и подключите LM Studio или Ollama.",
+            errorCode: "no_model",
+          });
+        }
+
+        // ── Try LLM generation with a hard 8-second timeout ─────────────────────
+        let llmError: string | null = null;
+        try {
+          const providerConfig = {
+            providerType: settings!.providerType,
+            baseUrl: settings!.baseUrl,
+            port: settings!.port,
+            model: settings!.model,
+            apiKey: settings!.apiKey || "",
+            temperature: parseFloat(settings!.temperature) || 0.2,
+            maxTokens: Math.min(settings!.maxTokens || 1024, 2048),
+          };
+          const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang === "bash" ? "Bash" : lang === "html" ? "HTML" : lang === "css" ? "CSS" : "Python";
+          const isWebLangInner = lang === "html" || lang === "css";
+          const systemPrompt = isWebLangInner
+            ? `You are an expert ${langName} developer. Write ONLY complete, working ${langName} code — no markdown fences, no explanations. For HTML include full page structure with <!DOCTYPE html>. Output raw code only.`
+            : `You are an expert ${langName} programmer. Write ONLY runnable code — no markdown fences, no explanations, no comments except inline. Output raw code only. The code must work correctly when executed.`;
+          const userMsg = isWebLangInner
+            ? `Write complete, working ${langName} for: ${query}\n\nRequirements:\n- Self-contained (all CSS/JS inline for HTML)\n- Visually polished\n- Output raw ${langName} only, no markdown`
+            : `Write a complete, runnable ${langName} program that: ${query}\n\nRequirements:\n- Output meaningful results to stdout\n- No external dependencies unless standard library\n- Handle edge cases\n- Output raw code only, no markdown`;
+
+          // Hard timeout: if LLM doesn't respond within 8 s, return a clear error.
+          const LLM_TIMEOUT_MS = 8_000;
+          const llmResult = await Promise.race([
+            chat(providerConfig as any, [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userMsg },
+            ]),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("llm_timeout")), LLM_TIMEOUT_MS)
+            ),
+          ]);
+
+          const raw = (llmResult as { content: string }).content.trim();
+          // Strip markdown code fences if LLM included them anyway
+          const stripped = raw
+            .replace(/^```[\w]*\n?/m, "")
+            .replace(/\n?```$/m, "")
+            .trim();
+          if (stripped.length > 5) {
+            code = stripped;
+            generationSource = "llm";
+          } else {
+            llmError = "Модель вернула пустой ответ";
+          }
+        } catch (err: any) {
+          if (err?.message === "llm_timeout") {
+            llmError = "Таймаут: модель не ответила за 8 секунд. Проверьте, загружена ли модель в LM Studio / Ollama.";
+            generationSource = "llm_timeout";
+          } else {
+            llmError = `Модель недоступна: ${err?.message || "неизвестная ошибка"}`;
+            generationSource = "llm_error";
+          }
+        }
+
+        // If LLM failed, return honest error — no silent template degradation
+        if (!code) {
+          return res.status(503).json({
+            ok: false,
+            error: llmError || "Модель недоступна. Убедитесь, что LM Studio / Ollama запущен и модель загружена.",
+            errorCode: generationSource, // "llm_timeout" | "llm_error" | "no_model"
+          });
+        }
       }
 
       // ── Run the generated code in the sandbox (skip for HTML/CSS) ──────────
       const isWebLang = lang === "html" || lang === "css";
       let sandboxResult: any = null;
 
-      if (!isWebLang) {
+      if (!isWebLang && code) {
         sandboxResult = await runCodeSandbox(code, lang as any, sid, 15_000);
       }
 
@@ -1750,15 +1779,44 @@ function isServerCodeIntent(query: string): boolean {
   return false;
 }
 
-/** Detect programming language from query text */
-function detectCodeLanguage(text: string): "python" | "javascript" | "typescript" | "bash" {
+/** Detect programming language from query text.
+ *
+ * Priority order:
+ *  1. Explicit language keyword (python / javascript / typescript / bash)
+ *  2. Product-type heuristics: game / app / site / calculator / landing / UI
+ *     → HTML (rich browser preview, playable, visually polished)
+ *  3. Fallback: javascript (safer for beginners than python — no encoding issues)
+ */
+function detectCodeLanguage(text: string): "python" | "javascript" | "typescript" | "bash" | "html" | "css" {
   const lower = text.toLowerCase();
+
+  // ── 1. Explicit language keywords ──────────────────────────────────────────
   if (/\bpython\b|\bпитон\b|\.py\b/.test(lower)) return "python";
-  if (/\btypescript\b|\bts\b|\.ts\b/.test(lower)) return "typescript";
+  if (/\btypescript\b|\.ts\b/.test(lower)) return "typescript";
   if (/\bjavascript\b|\bjs\b|\.js\b|\bnode\.?js\b/.test(lower)) return "javascript";
   if (/\bbash\b|\bshell\b|\.sh\b/.test(lower)) return "bash";
-  // Default to Python for generic code requests
-  return "python";
+  if (/\bcss\b|стил[ьи]|стиль/.test(lower)) return "css";
+
+  // ── 2. Product / UI heuristics → HTML (canvas game / site / app / UI) ──────
+  // These queries are best served as self-contained HTML pages:
+  //   game, app, website, landing, calculator, UI, todo, dashboard, form
+  if (
+    /игр[уаыеюй]|\bигра\b|\bигры\b|\bgame\b|\bgames\b/.test(lower) ||
+    /сайт|лендинг|веб.?сайт|веб.?страниц|веб.?приложени|\bwebsite\b|\blanding\b|\bweb\s*page\b|\bweb\s*app\b/.test(lower) ||
+    /калькулятор|\bcalculator\b/.test(lower) ||
+    /\bapp\b|\bapplication\b|приложени[еюяей]|\bапп\b/.test(lower) ||
+    /дашборд|\bdashboard\b/.test(lower) ||
+    /todo|\bui\b|форм[ауе]|\bform\b|\binterface\b|интерфейс/.test(lower) ||
+    /визуализаци[яюей]|\bvisuali[sz]ation\b/.test(lower) ||
+    /\bhtml\b/.test(lower)
+  ) return "html";
+
+  // ── 3. Fallback: javascript (universal, no encoding issues on Windows) ──────
+  // Only pure algorithm/data-processing requests that mention no product UI
+  // should still get python — but we no longer default to it blindly.
+  // Use JS as the safer fallback: it runs in the browser preview pane without
+  // any server-side encoding problems.
+  return "javascript";
 }
 
 /**
@@ -1771,11 +1829,15 @@ function detectCodeLanguage(text: string): "python" | "javascript" | "typescript
 function isTemplateOnlyRequest(lower: string): boolean {
   // Patterns that generateCodeTemplate covers explicitly (RU + EN)
   const EXPLICIT_TEMPLATES = [
-    // ── HTML product templates (game / site / calculator) ─────────────────────
-    // These now have full playable/polished templates — skip LLM for them.
-    /игр[уаыею]|игру|игра|игры|\bgame\b|\bgames\b/,
-    /сайт|лендинг|\bwebsite\b|\blanding\b/,
+    // ── HTML product templates (game / site / calculator / app / etc.) ────────
+    // These now route to HTML and have good templates — skip LLM for them.
+    /игр[уаыеюй]|\bигра\b|\bигры\b|\bgame\b|\bgames\b/,
+    /сайт|лендинг|веб.?сайт|веб.?приложени|\bwebsite\b|\blanding\b|\bweb\s*app\b|\bweb\s*page\b/,
     /калькулятор|\bcalculator\b/,
+    /\bapp\b|\bapplication\b|приложени[еюяей]|\bапп\b/,
+    /дашборд|\bdashboard\b/,
+    /todo|\bui\b|форм[ауе]|\bform\b|\binterface\b|интерфейс/,
+    /визуализаци[яюей]|\bvisuali[sz]ation\b/,
     // ── Algorithm / data patterns ─────────────────────────────────────────────
     /hello.?world|привет.?мир/,
     /fibonacci|фибоначчи/,
@@ -2419,23 +2481,22 @@ for i in range(1, 11):
     }
     if (/sort|сортировк|sorted|сортиров/i.test(lower)) {
       return `data = [5, 2, 8, 1, 9, 3, 7, 4, 6]
-print("Исходный список:", data)
+print("Original:", data)
 data_sorted = sorted(data)
-print("После сортировки:", data_sorted)
-# reverse
-print("По убыванию:", sorted(data, reverse=True))`;
+print("Sorted asc:", data_sorted)
+print("Sorted desc:", sorted(data, reverse=True))`;
     }
     if (/\bслов\b|word.?count|подсчёт.?слов|count.?word/i.test(lower)) {
-      return `text = "Это пример строки для подсчёта слов в тексте"
+      return `text = "The quick brown fox jumps over the lazy dog"
 words = text.split()
 word_count = len(words)
-print(f"Текст: '{text}'")
-print(f"Количество слов: {word_count}")
+print(f"Text: '{text}'")
+print(f"Word count: {word_count}")
 
 # Frequency count
 from collections import Counter
 freq = Counter(words)
-print("\\nЧастота слов:")
+print("\\nWord frequency:")
 for word, count in freq.most_common():
     print(f"  '{word}': {count}")`;
     }
@@ -2447,18 +2508,18 @@ for word, count in freq.most_common():
     return True
 
 primes = [n for n in range(2, 50) if is_prime(n)]
-print("Простые числа до 50:", primes)
-print(f"Всего: {len(primes)}")`;
+print("Primes up to 50:", primes)
+print(f"Count: {len(primes)}")`;
     }
     if (/reverse|разворот|реверс|обратн/i.test(lower)) {
       return `text = "Hello, World!"
 reversed_text = text[::-1]
-print(f"Исходная строка: '{text}'")
-print(f"Развёрнутая строка: '{reversed_text}'")
+print(f"Original string: '{text}'")
+print(f"Reversed string: '{reversed_text}'")
 
 numbers = [1, 2, 3, 4, 5]
-print(f"Исходный список: {numbers}")
-print(f"Развёрнутый список: {numbers[::-1]}")`;
+print(f"Original list: {numbers}")
+print(f"Reversed list: {numbers[::-1]}")`;
     }
     if (/dict|словарь|dictionary|json/i.test(lower)) {
       return `import json
@@ -2470,9 +2531,9 @@ data = {
     "active": True
 }
 
-print("Словарь:", data)
-print("\\nСериализация в JSON:")
-print(json.dumps(data, ensure_ascii=False, indent=2))
+print("Dict:", data)
+print("\\nJSON serialization:")
+print(json.dumps(data, ensure_ascii=True, indent=2))
 
 # Access
 print("\\nName:", data["name"])
@@ -2481,38 +2542,38 @@ print("Features count:", len(data["features"]))`;
     if (/file|файл|read|write|записать|прочитать/i.test(lower)) {
       return `import os
 
-# Запись в файл
+# Write to file
 filename = "test_output.txt"
 with open(filename, "w", encoding="utf-8") as f:
-    f.write("Первая строка\\n")
-    f.write("Вторая строка\\n")
-    f.write("Третья строка\\n")
-print(f"Файл '{filename}' записан")
+    f.write("Line 1\\n")
+    f.write("Line 2\\n")
+    f.write("Line 3\\n")
+print(f"File '{filename}' written")
 
-# Чтение из файла
+# Read from file
 with open(filename, "r", encoding="utf-8") as f:
     content = f.read()
-print("Содержимое файла:")
+print("File contents:")
 print(content)
 
-# Удаление
+# Delete
 os.remove(filename)
-print(f"Файл '{filename}' удалён")`;
+print(f"File '{filename}' deleted")`;
     }
     if (/list|список|array|массив|filter|map|reduce/i.test(lower)) {
       return `numbers = list(range(1, 11))
-print("Список:", numbers)
+print("List:", numbers)
 
 # map
 squares = list(map(lambda x: x**2, numbers))
-print("Квадраты:", squares)
+print("Squares:", squares)
 
 # filter
 evens = list(filter(lambda x: x % 2 == 0, numbers))
-print("Чётные:", evens)
+print("Evens:", evens)
 
 # sum / max / min
-print(f"Сумма: {sum(numbers)}, Max: {max(numbers)}, Min: {min(numbers)}")`;
+print(f"Sum: {sum(numbers)}, Max: {max(numbers)}, Min: {min(numbers)}")`;
     }
     if (/class|класс|oop|объект/i.test(lower)) {
       return `class Animal:
@@ -2521,33 +2582,39 @@ print(f"Сумма: {sum(numbers)}, Max: {max(numbers)}, Min: {min(numbers)}")`;
         self.sound = sound
 
     def speak(self):
-        return f"{self.name} говорит: {self.sound}!"
+        return f"{self.name} says: {self.sound}!"
 
     def __repr__(self):
         return f"Animal(name={self.name!r})"
 
-# Создание объектов
-dog = Animal("Собака", "Гав")
-cat = Animal("Кошка", "Мяу")
+# Create objects
+dog = Animal("Dog", "Woof")
+cat = Animal("Cat", "Meow")
 
 print(dog.speak())
 print(cat.speak())
-print("Объекты:", [dog, cat])`;
+print("Objects:", [dog, cat])`;
     }
     // Generic Python fallback — useful skeleton that actually runs
-    return `# Python скрипт: ${query}
+    // NOTE: utf-8 encoding declaration + stdout reconfigure prevent SyntaxError
+    // and UnicodeEncodeError on Windows terminals using cp1251/cp866.
+    return `# -*- coding: utf-8 -*-
+# Task: ${query}
 import sys
+# Fix encoding on Windows terminals (cp1251/cp866) so Cyrillic prints correctly
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 def main():
-    print("Запуск скрипта...")
-    
-    # Демонстрационный пример
+    print("Running script...")
+
+    # Demo: sum of squares
     data = [1, 2, 3, 4, 5]
     result = sum(x ** 2 for x in data)
-    print(f"Демо: сумма квадратов {data} = {result}")
-    
-    # TODO: Реализуйте логику для: ${query}
-    print("\\nГотово!")
+    print("Demo: sum of squares", data, "=", result)
+
+    # TODO: implement logic for: ${query}
+    print("Done!")
 
 if __name__ == "__main__":
     main()`;
@@ -2655,14 +2722,14 @@ free -h 2>/dev/null || echo "(free недоступен)"`;
 # Script: ${query}
 set -e
 
-echo "=== Скрипт запущен ==="
-echo "Дата: $(date)"
-echo "Директория: $(pwd)"
+echo "=== Script started ==="
+echo "Date: $(date)"
+echo "Dir: $(pwd)"
 echo ""
 
-# TODO: реализуйте логику для: ${query}
+# TODO: implement logic for: ${query}
 echo ""
-echo "=== Готово ==="`;
+echo "=== Done ==="`;
   }
 
   // Should never reach here, but safety fallback

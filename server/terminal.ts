@@ -221,13 +221,17 @@ export async function runCodeSandbox(
           fs.unlinkSync(tmpFile);
           return {
             output: "",
-            error: "Python не найден. Установите Python с https://python.org (убедитесь, что он добавлен в PATH).",
+            error: "Python not found. Install Python from https://python.org (make sure it is added to PATH).",
             exitCode: 1,
             durationMs: Date.now() - start,
             language,
           };
         }
-        command = `${pythonCmd} "${tmpFile}"`;
+        // PYTHONIOENCODING=utf-8 prevents UnicodeEncodeError when printing non-ASCII
+        // on Windows terminals that default to cp1251/cp866.
+        command = IS_WINDOWS
+          ? `set PYTHONIOENCODING=utf-8 && ${pythonCmd} "${tmpFile}"`
+          : `PYTHONIOENCODING=utf-8 ${pythonCmd} "${tmpFile}"`;
         break;
       }
       case "bash": {

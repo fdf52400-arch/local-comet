@@ -27,6 +27,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -66,6 +67,9 @@ import {
   Terminal,
   Save,
   Zap,
+  ServerOff,
+  TimerOff,
+  FileCode,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import MonacoEditorWrapper, { type EditorLang } from "@/components/monaco-editor-wrapper";
@@ -158,12 +162,19 @@ function getLangComment(lang: Lang): string {
 }
 
 // ── Lang detection from query ─────────────────────────────────────────────────
+//
+// Priority:
+//  1. Explicit language keyword (python / js / ts / etc.)
+//  2. Product/UI heuristics → html (game, app, site, calculator, landing, ui)
+//  3. Fallback: javascript (no encoding issues on Windows; runs in preview pane)
 
 function detectLang(text: string): Lang {
   const lower = text.toLowerCase();
-  if (/\bhtml\b|сайт|веб.?страниц|landing|web\s*page|html.?страниц/.test(lower)) return "html";
+
+  // ── 1. Explicit language keywords ─────────────────────────────────────────
+  if (/\bpython\b|\bпитон\b|\.py\b/.test(lower)) return "python";
   if (/\bcss\b|стил[ьи]|стиль/.test(lower)) return "css";
-  if (/\btypescript\b|\bts\b/.test(lower)) return "typescript";
+  if (/\btypescript\b|\bts\b|\.ts\b/.test(lower)) return "typescript";
   if (/\bjavascript\b|\bjs\b|\bnode\.?js\b/.test(lower)) return "javascript";
   if (/\bbash\b|\bshell\b/.test(lower)) return "bash";
   if (/\brust\b/.test(lower)) return "rust";
@@ -177,9 +188,25 @@ function detectLang(text: string): Lang {
   if (/\bjson\b/.test(lower)) return "json";
   if (/\byaml\b/.test(lower)) return "yaml";
   if (/\bmarkdown\b/.test(lower)) return "markdown";
-  // Heuristics: game / app / website → HTML for richer preview
-  if (/игр[уаыею]|игру|игра|игры| игре|игрой|game|app.*html|html.*app|dashboard|дашборд/.test(lower)) return "html";
-  return "python";
+
+  // ── 2. Product / UI heuristics → HTML ─────────────────────────────────────
+  // Requests for a game, app, site, calculator, landing page, dashboard, or any
+  // UI artifact are best served as self-contained HTML/CSS/JS documents.
+  if (
+    /игр[уаыеюй]|\bигра\b|\bигры\b|\bgame\b|\bgames\b/.test(lower) ||
+    /сайт|лендинг|веб.?сайт|веб.?страниц|веб.?приложени|\bwebsite\b|\blanding\b|\bweb\s*page\b|\bweb\s*app\b/.test(lower) ||
+    /калькулятор|\bcalculator\b/.test(lower) ||
+    /\bapp\b|\bapplication\b|приложени[еюяей]|\bапп\b/.test(lower) ||
+    /дашборд|\bdashboard\b/.test(lower) ||
+    /todo|\bui\b|форм[ауе]|\bform\b|\binterface\b|интерфейс/.test(lower) ||
+    /визуализаци[яюей]|\bvisuali[sz]ation\b/.test(lower) ||
+    /\bhtml\b/.test(lower)
+  ) return "html";
+
+  // ── 3. Fallback: javascript ────────────────────────────────────────────────
+  // Safer than Python as default: no Windows encoding issues, runs in the
+  // browser preview pane immediately without a server-side sandbox.
+  return "javascript";
 }
 
 // ── URL query parser ──────────────────────────────────────────────────────────
@@ -713,6 +740,20 @@ export default function CodeWindowPage() {
   const [copied, setCopied] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
+  // generationSource: tracks whether last code came from LLM, a template, or failed
+  const [generationSource, setGenerationSource] = useState<"llm" | "template" | "no_model" | "llm_timeout" | "llm_error" | null>(null);
+  const [modelBlockedError, setModelBlockedError] = useState<string | null>(null);
+
+  // ── Provider/model status (polled every 10s) ──────────────────────────────
+  const { data: computerStatus } = useQuery({
+    queryKey: ["/api/computer/status"],
+    queryFn: () => apiRequest("GET", "/api/computer/status").then((r) => r.json()),
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
+
+  const modelConfigured: boolean = !!(computerStatus?.provider?.configured && computerStatus?.provider?.model);
+  const modelAvailable: boolean = modelConfigured && computerStatus?.provider?.availability?.ok === true;
 
   // Split
   const { leftPct, containerRef, onMouseDown } = useSplitResize(50);
@@ -762,6 +803,8 @@ export default function CodeWindowPage() {
       setPhase("generating");
       setResult(null);
       setDebugResult(null);
+      setGenerationSource(null);
+      setModelBlockedError(null);
       setStatusMsg("Генерируется код…");
       const commentChar = getLangComment(useLang);
       setCode(
@@ -780,11 +823,28 @@ export default function CodeWindowPage() {
 
         if (!res.ok || !data.ok) {
           const errMsg = data.error || `Ошибка ${res.status}`;
+          const errCode = data.errorCode as string | undefined;
+
+          // Model not ready / unavailable — show honest blocked state
+          if (errCode === "no_model" || errCode === "llm_timeout" || errCode === "llm_error" || res.status === 503) {
+            setCode(""); // clear the placeholder, don't show junk
+            setPhase("error");
+            setGenerationSource(errCode as any ?? "llm_error");
+            setModelBlockedError(errMsg);
+            setStatusMsg(`✗ Модель недоступна`);
+            return;
+          }
+
+          // Other errors
           setCode(commentChar ? `${commentChar} Ошибка генерации: ${errMsg}` : `// Ошибка: ${errMsg}`);
           setPhase("error");
           setStatusMsg(`✗ Ошибка: ${errMsg}`);
           return;
         }
+
+        // Track generation source from response
+        const src = (data.generationSource as "llm" | "template" | null) ?? null;
+        setGenerationSource(src);
 
         // Detect language from response
         let detectedLang = useLang;
@@ -813,7 +873,8 @@ export default function CodeWindowPage() {
             durationMs: 0,
             language: detectedLang,
           });
-          setStatusMsg(`✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Визор обновлён.`);
+          const srcLabel = src === "template" ? " [шаблон]" : "";
+          setStatusMsg(`✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Визор обновлён.${srcLabel}`);
           return;
         }
 
@@ -828,9 +889,10 @@ export default function CodeWindowPage() {
             language: data.language ?? detectedLang,
           };
           setResult(r);
+          const srcLabelSandbox = src === "template" ? " [шаблон]" : "";
           setStatusMsg(
             r.exitCode === 0
-              ? `✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Выполнено.`
+              ? `✓ Готово! Язык: ${langDef.emoji} ${langDef.label}. Выполнено.${srcLabelSandbox}`
               : `⚠ Завершено с ошибкой (exit ${r.exitCode})`
           );
         } else {
@@ -936,6 +998,7 @@ export default function CodeWindowPage() {
       setPhase("patching");
       setResult(null);
       setDebugResult(null);
+      setModelBlockedError(null);
       setStatusMsg("Применяются правки…");
 
       const langDef = getLangDef(lang);
@@ -950,6 +1013,14 @@ export default function CodeWindowPage() {
         const data = await res.json();
 
         if (!res.ok || !data.ok) {
+          const errCode = data.errorCode as string | undefined;
+          if (errCode === "no_model" || errCode === "llm_timeout" || errCode === "llm_error" || res.status === 503) {
+            setPhase("error");
+            setGenerationSource(errCode as any ?? "llm_error");
+            setModelBlockedError(data.error || "Модель недоступна");
+            setStatusMsg("✗ Модель недоступна");
+            return;
+          }
           setPhase("error");
           setStatusMsg("✗ Ошибка применения правок");
           return;
@@ -1175,6 +1246,26 @@ export default function CodeWindowPage() {
 
         <div className="flex-1" />
 
+        {/* Model status indicator */}
+        {computerStatus && !modelConfigured && (
+          <div
+            className="flex items-center gap-1.5 text-[11px] font-mono text-amber-400/80 select-none shrink-0"
+            data-testid="model-not-configured-indicator"
+          >
+            <ServerOff className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Модель не подключена</span>
+          </div>
+        )}
+        {computerStatus && modelConfigured && !modelAvailable && (
+          <div
+            className="flex items-center gap-1.5 text-[11px] font-mono text-red-400/80 select-none shrink-0"
+            data-testid="model-unavailable-indicator"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Модель недоступна</span>
+          </div>
+        )}
+
         {/* Status line in top bar */}
         <StatusLine phase={phase} statusMsg={statusMsg} lang={lang} />
 
@@ -1213,6 +1304,29 @@ export default function CodeWindowPage() {
             </Badge>
             <LangSelector lang={lang} onChange={setLang} disabled={isWorking} />
           </div>
+
+          {/* Generation source badge — honest labelling */}
+          {generationSource === "template" && code.trim() && (
+            <Badge
+              variant="outline"
+              className="text-[9px] font-mono px-1.5 py-0 h-5 shrink-0 border-amber-500/40 text-amber-400/80 gap-1"
+              title="Код сгенерирован как локальный шаблон, а не от AI-модели"
+              data-testid="badge-template-source"
+            >
+              <FileCode className="h-3 w-3" />
+              Шаблон
+            </Badge>
+          )}
+          {generationSource === "llm" && code.trim() && (
+            <Badge
+              variant="outline"
+              className="text-[9px] font-mono px-1.5 py-0 h-5 shrink-0 border-emerald-500/40 text-emerald-400/80 gap-1"
+              data-testid="badge-llm-source"
+            >
+              <Zap className="h-3 w-3" />
+              AI
+            </Badge>
+          )}
 
           <div className="w-px h-4 bg-border/60 shrink-0 mx-0.5" />
 
@@ -1341,6 +1455,52 @@ export default function CodeWindowPage() {
               placeholder={`// Сгенерируйте код через строку ниже…\n// Опишите задачу: лендинг, игра, скрипт Python, дашборд, алгоритм…`}
               testId="monaco-editor-main"
             />
+
+            {/* Model blocked overlay — shown when LLM is unavailable */}
+            {modelBlockedError && (
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/92 z-20 px-6"
+                data-testid="model-blocked-overlay"
+              >
+                <div className="flex flex-col items-center gap-3 max-w-sm text-center">
+                  {generationSource === "no_model" ? (
+                    <ServerOff className="h-10 w-10 text-muted-foreground/50" />
+                  ) : generationSource === "llm_timeout" ? (
+                    <TimerOff className="h-10 w-10 text-amber-400/60" />
+                  ) : (
+                    <AlertTriangle className="h-10 w-10 text-red-400/60" />
+                  )}
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-foreground/80">
+                      {generationSource === "no_model"
+                        ? "Модель не настроена"
+                        : generationSource === "llm_timeout"
+                        ? "Модель не ответила"
+                        : "Модель недоступна"}
+                    </p>
+                    <p className="text-xs text-muted-foreground/70 leading-relaxed">{modelBlockedError}</p>
+                  </div>
+                  <Link href="/providers">
+                    <Button
+                      size="sm"
+                      className="gap-1.5 text-xs"
+                      data-testid="button-go-to-providers"
+                    >
+                      → Настроить Providers
+                    </Button>
+                  </Link>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => { setModelBlockedError(null); setPhase("idle"); }}
+                    data-testid="button-dismiss-blocked"
+                  >
+                    Закрыть
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Debug / Output drawer at bottom of editor */}
